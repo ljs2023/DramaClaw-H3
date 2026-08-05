@@ -16,6 +16,7 @@
 - Git 分支：`feature/minimax-h3-local`
 - 部署前提交：`a506de7421905ca55d3ed4f9ae5d5d9648105d71`
 - H3 后端主体提交：`8b7c0ad1`（`feat(video): add local MiniMax H3 ComfyUI backend`）
+- 已部署分支提交：`7ac30fc0e23b`（包含项目任务本地计费修复）
 - DramaClaw 目录：`/data/DramaClaw`
 - H3 目录：`/data/MiniMax-H3-ComfyUI`
 
@@ -63,7 +64,9 @@
 
 ## 自动测试
 
-- Python H3/Freezone/Runner 相关测试：`63 passed`
+- Python 完整测试套件：`2128 passed, 16 skipped, 2 deselected`，0 失败
+- Python H3/Freezone/Runner 相关测试：`64 passed`
+- 前端完整测试套件：310 个测试文件，`2054 passed`，0 失败
 - 前端 H3 能力测试：`60 passed`
 - Ruff：通过
 - TypeScript 类型检查：通过
@@ -82,6 +85,7 @@
 | 正式竖屏首帧 | 480×864，5 秒，FAST 16 步 | 成功 | 约 3 分钟 |
 | 竖屏首尾帧续拍 | Shot01 末帧→Shot02，480×864，5 秒，TURBO | 成功 | 约 2–3 分钟 |
 | 双参考竖屏 | 2 张图，480×864，5 秒，TURBO/MATCH | 成功 | 约 2–3 分钟 |
+| 正式项目任务 | 上传公开图→项目队列→H3→项目视频 URL | 成功，HTTP 200 | 约 2–3 分钟 |
 
 参考图提示词映射验证为：
 
@@ -101,6 +105,9 @@
 - H3 `/system_stats`：成功
 - 容器内 H3 健康检查：`online=true`
 - 前端构建成品包含 `MiniMax H3 Local`
+- 正式项目 `H3_Public_Smoke` 的模型接口返回 `comfyui_h3`
+- 项目结果接口返回受保护的 `/static/projects/...mp4`，下载验证 HTTP 200
+- 项目视频与末帧均写入 `freezone/_outputs/freezone_video_gen`
 
 ## 部署期间处理的问题
 
@@ -109,6 +116,9 @@
 2. 服务器外网下载 npm 大包超时。后端镜像在服务器正常构建；前端在本机完成同一
    Vite 生产构建，再使用 `frontend/Dockerfile.prebuilt` 封装为 Nginx Docker 镜像。
 3. Dockerfile 增加 pnpm 下载缓存、延长超时和重试，供后续服务器原生重建使用。
+4. 正式项目任务首次被“本地后端没有云计费模型”拦截。根因是自由画布对所有视频
+   后端无条件解析云端积分模型；增加失败回归测试后，仅对 `comfyui_h3` 省略云端
+   计费载荷，其他云模型逻辑不变。修复后项目任务、结果 URL 和视频池均通过。
 
 ## 已知限制
 
@@ -130,4 +140,3 @@ git switch -c rollback-before-h3 a506de7421905ca55d3ed4f9ae5d5d9648105d71
 
 不要给 `down` 增加 `-v`，以免删除 DramaClaw 数据卷。回滚只影响 DramaClaw，
 不会修改或停止 H3。
-

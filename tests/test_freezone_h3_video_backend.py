@@ -4,10 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from novelvideo.freezone.jobs import run_freezone_video_gen
-from novelvideo.api.routes.freezone import (
-    _resolve_catalog_request,
-    _start_or_enqueue_freezone_video_gen,
-)
+from novelvideo.api.routes.freezone import _resolve_catalog_request
 from novelvideo.freezone.video_node import (
     get_freezone_video_model_options,
     normalize_video_resolution_for_backend,
@@ -128,6 +125,8 @@ async def test_ce_h3_model_params_accept_quality_and_fixed_seed(monkeypatch):
 async def test_local_h3_project_task_skips_cloud_credit_model_resolution(
     monkeypatch, tmp_path
 ):
+    from novelvideo.api.routes import freezone as freezone_routes
+
     captured = {}
 
     def unexpected_cloud_billing(_params):
@@ -151,7 +150,7 @@ async def test_local_h3_project_task_skips_cloud_credit_model_resolution(
         lambda: FakeTaskBackend(),
     )
 
-    response = await _start_or_enqueue_freezone_video_gen(
+    response = await freezone_routes._start_or_enqueue_freezone_video_gen(
         ctx=SimpleNamespace(project_id="project-h3-local"),
         username="local",
         project="H3_Public_Smoke",
