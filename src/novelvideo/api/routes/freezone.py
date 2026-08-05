@@ -247,6 +247,7 @@ from novelvideo.freezone.video_node import (
     get_video_camera_template,
     get_video_camera_templates,
     is_freezone_happyhorse_backend,
+    is_freezone_h3_backend,
     is_freezone_seedance2_backend,
     load_video_character_library,
     sync_mainline_assets_into_library,
@@ -6890,6 +6891,17 @@ async def _resolve_catalog_request(
         ),
         None,
     )
+    if (
+        entry is None
+        and catalog is None
+        and media_type == "video"
+        and requested == "comfyui_h3"
+    ):
+        entry = next(
+            item
+            for item in get_freezone_video_model_options()
+            if item["id"] == "comfyui_h3"
+        )
     if entry is None:
         # In EE the catalog is authoritative. Never fall back to CE's static
         # model map when no enabled model matches the submitted identifier.
@@ -7605,6 +7617,7 @@ async def freezone_video_i2v(
         len(source_paths) > 1
         and not is_freezone_seedance2_backend(backend)
         and not is_freezone_happyhorse_backend(backend)
+        and not is_freezone_h3_backend(backend)
     ):
         raise HTTPException(
             400,

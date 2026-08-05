@@ -157,6 +157,7 @@ FREEZONE_DEFAULT_VIDEO_RESOLUTION_OPTIONS = ("480p", "720p", "1080p")
 FREEZONE_DEFAULT_SEEDANCE2_RESOLUTION_OPTIONS = ("480p", "720p")
 FREEZONE_HAPPYHORSE_RESOLUTION_OPTIONS = ("720p", "1080p")
 FREEZONE_GROK_VIDEO_CHANNEL_RESOLUTION_OPTIONS = ("720p", "480p")
+FREEZONE_H3_RESOLUTION_OPTIONS = ("480p",)
 
 
 def _freezone_video_model_from_backend(backend: str | None) -> str:
@@ -173,6 +174,8 @@ def freezone_video_resolution_options(backend: str | None) -> tuple[str, ...]:
         return FREEZONE_GROK_VIDEO_CHANNEL_RESOLUTION_OPTIONS
     if model == "happyhorse-1.0":
         return FREEZONE_HAPPYHORSE_RESOLUTION_OPTIONS
+    if model == "comfyui_h3":
+        return FREEZONE_H3_RESOLUTION_OPTIONS
     if model.startswith("seedance-2.0"):
         return FREEZONE_SEEDANCE2_RESOLUTION_OPTIONS_BY_MODEL.get(
             model,
@@ -234,6 +237,8 @@ def normalize_video_resolution_for_backend(
 
 
 def freezone_video_duration_bounds(backend: str | None) -> tuple[int | None, int | None]:
+    if str(backend or "").strip().lower() == "comfyui_h3":
+        return (5, 15)
     return video_duration_bounds_for_backend(backend)
 
 
@@ -284,16 +289,67 @@ def get_freezone_video_model_options() -> list[dict[str, Any]]:
                 }
             )
         data.append(item)
+    data.append(
+        {
+            "id": "comfyui_h3",
+            "providerId": "local",
+            "provider": "local",
+            "apiModel": "comfyui_h3",
+            "api_model": "comfyui_h3",
+            "label": "MiniMax H3 Local",
+            "backend": "comfyui_h3",
+            "resolutionOptions": ["480p"],
+            "resolution_options": ["480p"],
+            "minDuration": 5,
+            "min_duration": 5,
+            "maxDuration": 15,
+            "max_duration": 15,
+            "ratioOptions": ["9:16", "16:9", "1:1"],
+            "ratio_options": ["9:16", "16:9", "1:1"],
+            "supportedModes": ["first_frame", "first_last_frame", "image_reference"],
+            "supported_modes": ["first_frame", "first_last_frame", "image_reference"],
+            "referenceImageMax": 9,
+            "reference_image_max": 9,
+            "referenceVideoMax": 0,
+            "reference_video_max": 0,
+            "referenceAudioMax": 0,
+            "reference_audio_max": 0,
+            "request": {
+                "endpoint": "video/generations",
+                "parameters": [
+                    {
+                        "key": "h3_preset",
+                        "label": "H3质量",
+                        "control": "select",
+                        "requestPath": "h3_preset",
+                        "options": ["QUALITY", "FAST", "TURBO"],
+                        "default": "FAST",
+                    },
+                    {
+                        "key": "seed",
+                        "label": "固定 Seed（高级）",
+                        "control": "number",
+                        "requestPath": "seed",
+                        "min": 0,
+                        "max": 281474976710655,
+                        "step": 1,
+                    },
+                ],
+            },
+        }
+    )
     return data
 
 
 def get_freezone_video_model_names() -> list[str]:
-    return list(_freezone_newapi_video_options().keys())
+    return [item["id"] for item in get_freezone_video_model_options()]
 
 
 def resolve_freezone_video_backend(model: str | None) -> str:
     text = str(model or "").strip()
-    options = _freezone_newapi_video_options()
+    options = {
+        item["id"]: item["label"] for item in get_freezone_video_model_options()
+    }
     if not text:
         return (
             FREEZONE_DEFAULT_VIDEO_BACKEND
@@ -334,6 +390,10 @@ def is_freezone_seedance2_backend(backend: str | None) -> bool:
 
     model = parse_newapi_video_backend(text) or parse_huimeng_video_backend(text)
     return bool(model and model.startswith("seedance-2.0"))
+
+
+def is_freezone_h3_backend(backend: str | None) -> bool:
+    return str(backend or "").strip().lower() == "comfyui_h3"
 
 
 def is_freezone_happyhorse_backend(backend: str | None) -> bool:

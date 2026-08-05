@@ -755,6 +755,23 @@ COMFYUI_WORKFLOW = os.environ.get("COMFYUI_WORKFLOW", "gguf")
 # ComfyUI 是否使用 SSL（HTTPS/WSS），云服务器通常需要开启
 COMFYUI_USE_SSL = os.environ.get("COMFYUI_USE_SSL", "false").lower() in ("true", "1", "yes")
 
+# MiniMax H3 Local 使用独立 ComfyUI 服务，不复用或修改旧 Wan/LTX 配置。
+COMFYUI_H3_ADDRESS = os.environ.get("COMFYUI_H3_ADDRESS", "192.168.3.9:18189")
+COMFYUI_H3_USE_SSL = os.environ.get("COMFYUI_H3_USE_SSL", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+COMFYUI_H3_TIMEOUT = float(os.environ.get("COMFYUI_H3_TIMEOUT", "1800"))
+COMFYUI_H3_MAX_CONCURRENT = max(
+    1, int(os.environ.get("COMFYUI_H3_MAX_CONCURRENT", "1"))
+)
+COMFYUI_H3_DEFAULT_PRESET = os.environ.get("COMFYUI_H3_DEFAULT_PRESET", "FAST").upper()
+COMFYUI_H3_DEFAULT_ASPECT_RATIO = os.environ.get(
+    "COMFYUI_H3_DEFAULT_ASPECT_RATIO", "9:16"
+)
+COMFYUI_H3_DEFAULT_DURATION = int(os.environ.get("COMFYUI_H3_DEFAULT_DURATION", "5"))
+
 # 默认视频分辨率（竖屏）
 VIDEO_RESOLUTION = os.environ.get("VIDEO_RESOLUTION", "720x1280")
 
@@ -781,6 +798,11 @@ def get_video_generation_config() -> dict:
         "comfyui_url": COMFYUI_VIDEO_URL,
         "comfyui_workflow": COMFYUI_WORKFLOW,
         "comfyui_use_ssl": COMFYUI_USE_SSL,
+        "comfyui_h3_address": COMFYUI_H3_ADDRESS,
+        "comfyui_h3_use_ssl": COMFYUI_H3_USE_SSL,
+        "comfyui_h3_timeout": COMFYUI_H3_TIMEOUT,
+        "comfyui_h3_max_concurrent": COMFYUI_H3_MAX_CONCURRENT,
+        "comfyui_h3_default_preset": COMFYUI_H3_DEFAULT_PRESET,
         "resolution": VIDEO_RESOLUTION,
         "width": resolution["width"],
         "height": resolution["height"],

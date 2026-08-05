@@ -10,6 +10,7 @@ import {
   formatAudioDurationClips,
   isGrokVideoChannelModel,
   isHappyHorseVideoModel,
+  isMiniMaxH3VideoModel,
   isSeedance1xVideoModel,
   isSeedance2VideoModel,
   isVideoModeSupportedByModel,
@@ -28,6 +29,7 @@ const SEEDANCE2_VALUE = "newapi_seedance-2.0-fast-value";
 const SEEDANCE10_PRO_FAST = "newapi_seedance-1.0-pro-fast";
 const SEEDANCE15_PRO = "newapi_seedance-1.5-pro";
 const HAPPYHORSE = "newapi_happyhorse-1.0";
+const MINIMAX_H3 = "comfyui_h3";
 
 describe("video model family detection", () => {
   it("classifies Seedance 2.0 variants (not 1.x)", () => {
@@ -51,6 +53,12 @@ describe("video model family detection", () => {
     expect(isGrokVideoChannelModel("newapi_grok-video-channel")).toBe(true);
   });
 
+  it("classifies MiniMax H3 Local as its own backend", () => {
+    expect(isMiniMaxH3VideoModel(MINIMAX_H3)).toBe(true);
+    expect(isSeedance2VideoModel(MINIMAX_H3)).toBe(false);
+    expect(isHappyHorseVideoModel(MINIMAX_H3)).toBe(false);
+  });
+
   it("tolerates null / empty / oddly-formatted ids without misclassifying", () => {
     for (const id of [null, undefined, "", "  "]) {
       expect(isSeedance2VideoModel(id)).toBe(false);
@@ -63,6 +71,13 @@ describe("video model family detection", () => {
 });
 
 describe("videoEmptyStateCtaModes — CTA by model capability", () => {
+  it("MiniMax H3 → 首帧 / 图片参考 / 首尾帧", () => {
+    expect(videoEmptyStateCtaModes(MINIMAX_H3)).toEqual([
+      "imageToVideo",
+      "imageReference",
+      "firstLastFrame",
+    ]);
+  });
   it("Seedance 2.0 → 全能参考 / 图片参考 / 首尾帧", () => {
     expect(videoEmptyStateCtaModes(SEEDANCE2_FAST)).toEqual([
       "allReference",
@@ -98,6 +113,18 @@ describe("videoEmptyStateCtaModes — CTA by model capability", () => {
 });
 
 describe("isVideoModeSupportedByModel — mode gating by model", () => {
+  it("MiniMax H3 capability list only exposes verified local modes", () => {
+    const model = {
+      id: MINIMAX_H3,
+      supportedModes: ["first_frame", "first_last_frame", "image_reference"],
+    };
+    expect(isVideoModeSupportedByModel("imageToVideo", model)).toBe(true);
+    expect(isVideoModeSupportedByModel("firstLastFrame", model)).toBe(true);
+    expect(isVideoModeSupportedByModel("imageReference", model)).toBe(true);
+    expect(isVideoModeSupportedByModel("textToVideo", model)).toBe(false);
+    expect(isVideoModeSupportedByModel("allReference", model)).toBe(false);
+    expect(isVideoModeSupportedByModel("videoEdit", model)).toBe(false);
+  });
   const commonModes: VideoGenMode[] = ["textToVideo", "imageToVideo", "imageReference"];
 
   it("全能参考 / 首尾帧仅 Seedance 2.0", () => {

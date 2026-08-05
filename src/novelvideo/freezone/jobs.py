@@ -1173,7 +1173,10 @@ async def run_freezone_video_gen(
         for item in (reference_items or [])
         if str(item.get("path") or "").strip()
     ]
-    from novelvideo.freezone.video_node import is_freezone_seedance2_backend
+    from novelvideo.freezone.video_node import (
+        is_freezone_h3_backend,
+        is_freezone_seedance2_backend,
+    )
 
     video_gen = create_video_generator(
         backend=backend,
@@ -1182,11 +1185,28 @@ async def run_freezone_video_gen(
         model_params=model_params,
         request_schema=request_schema,
     )
+    generator_references = references
+    normalized_mode = str(gen_mode or "").replace("-", "_").lower()
+    if is_freezone_h3_backend(backend) and normalized_mode in {
+        "firstframe",
+        "first_frame",
+        "imagetovideo",
+        "image_to_video",
+        "firstlastframe",
+        "first_last_frame",
+    }:
+        generator_references = []
+    extra_h3_kwargs: dict[str, object] = {}
+    if is_freezone_h3_backend(backend) and model_params:
+        if model_params.get("h3_preset"):
+            extra_h3_kwargs["h3_preset"] = str(model_params["h3_preset"])
+        if model_params.get("seed") is not None:
+            extra_h3_kwargs["seed"] = int(model_params["seed"])
     if backend == "seedance_2":
         result = await video_gen.generate(
             prompt=prompt,
             output_path=str(out),
-            references=references,
+            references=generator_references,
             duration=float(duration_seconds),
             audio=bool(generate_audio),
             human_review=bool(human_review),
@@ -1212,11 +1232,12 @@ async def run_freezone_video_gen(
             aspect_ratio=aspect_ratio,
             duration=float(duration_seconds),
             last_frame_path=last_frame_path,
-            references=references,
+            references=generator_references,
             human_review=bool(human_review),
             seedance2_config={"scene_optimize": scene_optimize} if scene_optimize else None,
             gen_mode=gen_mode,
             **extra_kwargs,
+            **extra_h3_kwargs,
         )
     if not result or result.status.value != "done":
         err = result.error if result else "unknown error"

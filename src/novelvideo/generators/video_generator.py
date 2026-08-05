@@ -129,6 +129,7 @@ class VideoBackend(Enum):
     SEEDANCE_PRO_SILENT = "seedance_pro_silent"  # Seedance 1.5 Pro 无声
     SEEDANCE_2 = "seedance_2"  # Seedance 2.0（v2.0 主力）
     COMFYUI = "comfyui"  # Claymore 1.0
+    COMFYUI_H3 = "comfyui_h3"  # MiniMax H3 Local
     LTX23 = "ltx23"  # Lightricks LTX-Video 2.3 22B
     GROK_720 = "grok_720"  # xAI Grok Imagine Video 720p
 
@@ -3591,6 +3592,7 @@ def create_video_generator(
             - SEEDANCE_PRO: Seedance 1.5 Pro 有声（火山方舟）
             - SEEDANCE_PRO_SILENT: Seedance 1.5 Pro 无声（火山方舟）
             - COMFYUI: Claymore 1.0 本地服务
+            - COMFYUI_H3: MiniMax H3 Local 本地服务
             - GROK_720: xAI Grok Imagine Video 720p
         use_mock: 兼容旧接口，True 时使用 MockVideoGenerator
         workflow_type: ComfyUI 工作流类型 ("gguf" 或 "fp8")，默认从环境变量读取
@@ -3645,6 +3647,12 @@ def create_video_generator(
         if workflow_type is None:
             workflow_type = os.environ.get("COMFYUI_WORKFLOW", "gguf")
         return ComfyUIVideoGenerator(workflow_type=workflow_type, **kwargs)
+    elif backend_enum == VideoBackend.COMFYUI_H3:
+        from novelvideo.generators.comfyui_h3_generator import (
+            MiniMaxH3ComfyUIGenerator,
+        )
+
+        return MiniMaxH3ComfyUIGenerator(**kwargs)
     elif backend_enum == VideoBackend.SEEDANCE_2:
         return Seedance2VideoGenerator(**kwargs)
     elif backend_enum == VideoBackend.LTX23:

@@ -202,6 +202,11 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
         generate_kwargs["references"] = model_references
     if config.get("audio_setting"):
         generate_kwargs["audio_setting"] = str(config["audio_setting"])
+    if backend_str == "comfyui_h3":
+        if config.get("h3_preset"):
+            generate_kwargs["h3_preset"] = str(config["h3_preset"])
+        if config.get("seed") is not None:
+            generate_kwargs["seed"] = int(config["seed"])
     if is_seedance2_backend:
         generate_kwargs["seedance2_config"] = seedance2_config
 
@@ -407,6 +412,10 @@ async def _run_video_generation_async(
                     "resolution": resolution,
                     "ratio": ratio,
                     "prop_menu": prop_menu,
+                    "references": beat.get("references") or beat.get("video_references") or [],
+                    "h3_preset": beat.get("h3_preset") or payload.get("h3_preset"),
+                    "seed": beat.get("seed") if beat.get("seed") is not None else payload.get("seed"),
+                    "audio_setting": beat.get("audio_setting") or payload.get("audio_setting"),
                 },
             },
         }
@@ -836,6 +845,11 @@ async def _run_freezone_video_gen_async(
         "output_path": str(out_path),
         "output_url": make_static_url_for_context(ctx, rel),
     }
+    last_frame_path = out_path.with_name(f"{out_path.stem}_last.png")
+    if last_frame_path.exists():
+        last_frame_rel = last_frame_path.relative_to(project_dir).as_posix()
+        result["last_frame_path"] = str(last_frame_path)
+        result["last_frame_url"] = make_static_url_for_context(ctx, last_frame_rel)
     history_record = _append_freezone_video_node_history(
         ctx=ctx,
         project_dir=project_dir,

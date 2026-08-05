@@ -42,6 +42,7 @@ from .video_generator import (
     ComfyUIVideoGenerator,
     create_video_generator,
 )
+from .comfyui_h3_generator import MiniMaxH3ComfyUIGenerator
 from .nanobanana_grid import (
     GridGenerationRequest,
     GridGenerationResult,
@@ -102,6 +103,7 @@ __all__ = [
     "MockVideoGenerator",
     "SeedanceVideoGenerator",
     "ComfyUIVideoGenerator",
+    "MiniMaxH3ComfyUIGenerator",
     "create_video_generator",
     # NanoBananaPro Grid Generator
     "GridGenerationRequest",

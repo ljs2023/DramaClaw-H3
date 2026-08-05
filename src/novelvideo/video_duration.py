@@ -60,6 +60,7 @@ def video_duration_bounds_for_backend(
         "seedance_pro_silent": (4, 12),
         "seedance_2": (5, 15),
         "grok_720": (1, 15),
+        "comfyui_h3": (5, 15),
     }
     return legacy_bounds.get(str(backend or "").strip().lower(), (None, None))
 

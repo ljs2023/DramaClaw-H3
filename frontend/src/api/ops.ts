@@ -1029,7 +1029,7 @@ export async function fetchFreezoneImageModels(
 // /freezone/video/models -------------------------------------------------- //
 
 /** Provider tab id for video generation models. */
-export type FreezoneVideoProvider = "newapi" | "seedance" | "huimeng";
+export type FreezoneVideoProvider = "newapi" | "seedance" | "huimeng" | "local";
 
 export interface FreezoneVideoModelInfo {
   /** Opaque database identity used by new billing and task records. */
@@ -1068,6 +1068,7 @@ const VIDEO_MODEL_PROVIDER_HINTS: Array<{
   match: (raw: string) => boolean;
   providerId: FreezoneVideoProvider;
 }> = [
+  { match: (s) => s.toLowerCase() === "comfyui_h3", providerId: "local" },
   { match: (s) => s.toLowerCase().startsWith("huimeng"), providerId: "huimeng" },
   { match: (s) => s.toLowerCase().startsWith("seedance"), providerId: "seedance" },
 ];
@@ -1082,7 +1083,12 @@ function inferVideoProvider(raw: string): FreezoneVideoProvider {
 function normalizeVideoProviderId(raw: string | null): FreezoneVideoProvider | null {
   if (!raw) return null;
   const lowered = raw.toLowerCase();
-  if (lowered === "newapi" || lowered === "seedance" || lowered === "huimeng") return lowered;
+  if (
+    lowered === "newapi" ||
+    lowered === "seedance" ||
+    lowered === "huimeng" ||
+    lowered === "local"
+  ) return lowered;
   return null;
 }
 

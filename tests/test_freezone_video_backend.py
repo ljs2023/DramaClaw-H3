@@ -163,11 +163,15 @@ def test_video_model_options_and_resolution_work() -> None:
     assert "newapi_grok-video-channel" not in names
     assert ids == set(names)
     assert api_models == set(names)
-    assert all(item["providerId"] == "newapi" for item in options)
+    assert all(
+        item["providerId"] == ("local" if item["id"] == "comfyui_h3" else "newapi")
+        for item in options
+    )
     assert "Seedance1.0 Pro Fast" in labels
     assert "Seedance1.5 Pro" in labels
     assert "Seedance2.0 Fast" in labels
     assert "HappyHorse 1.0" in labels
+    assert "MiniMax H3 Local" in labels
     assert "Grok Video Channel" not in labels
     assert normalize_video_resolution("720P") == "720p"
     happyhorse = next(item for item in options if item["id"] == "newapi_happyhorse-1.0")

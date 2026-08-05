@@ -32,6 +32,10 @@ export function isGrokVideoChannelModel(modelId: string | null | undefined): boo
   return normalizeVideoModelId(modelId).includes("grokvideochannel");
 }
 
+export function isMiniMaxH3VideoModel(modelId: string | null | undefined): boolean {
+  return normalizeVideoModelId(modelId) === "comfyuih3";
+}
+
 // Seedance 1 全系列（1.0 Pro Fast / 1.5 Pro / …）：版本号 `1.x` → `1x`，匹配
 // `seedance1` 后跟任意数字，避免误命中 2.0（`seedance20`）。引用素材时这些模型受限。
 export function isSeedance1xVideoModel(modelId: string | null | undefined): boolean {
@@ -81,6 +85,13 @@ export function isVideoModeSupportedByModel(
     return model.supportedModes?.includes(modeKey[mode]) ?? false;
   }
   const modelId = typeof model === "string" ? model : (model?.apiModel ?? model?.id);
+  if (isMiniMaxH3VideoModel(modelId)) {
+    return (
+      mode === "imageToVideo" ||
+      mode === "firstLastFrame" ||
+      mode === "imageReference"
+    );
+  }
   if (isHappyHorseVideoModel(modelId)) {
     return (
       mode === "textToVideo" ||
@@ -116,6 +127,9 @@ export type VideoEmptyStateCtaMode =
 export function videoEmptyStateCtaModes(
   modelId: string | null | undefined,
 ): VideoEmptyStateCtaMode[] {
+  if (isMiniMaxH3VideoModel(modelId)) {
+    return ["imageToVideo", "imageReference", "firstLastFrame"];
+  }
   if (isHappyHorseVideoModel(modelId)) {
     return ["imageToVideo", "imageReference"];
   }
@@ -251,6 +265,15 @@ export function videoSubmitMediaRejectionReason(
   modelId: string | null | undefined,
   counts: { images: number; videos: number; audios: number },
 ): string | null {
+  if (isMiniMaxH3VideoModel(modelId)) {
+    if (counts.videos > 0 || counts.audios > 0) {
+      return "MiniMax H3 Local 当前仅支持图片素材";
+    }
+    if (counts.images > 9) {
+      return "MiniMax H3最多允许9张参考图片";
+    }
+    return null;
+  }
   if (counts.videos > 0 && mode !== "allReference" && mode !== "videoEdit") {
     return "该模型不支持视频素材";
   }
@@ -293,6 +316,15 @@ export function videoModelReferenceDisabledReason(
   modelId: string | null | undefined,
   counts: { images: number; videos: number; audios: number },
 ): string | null {
+  if (isMiniMaxH3VideoModel(modelId)) {
+    if (counts.videos > 0 || counts.audios > 0) {
+      return "MiniMax H3 Local 当前仅支持图片素材";
+    }
+    if (counts.images > 9) {
+      return "MiniMax H3最多允许9张参考图片";
+    }
+    return null;
+  }
   if (isGrokVideoChannelModel(modelId)) {
     if (counts.videos > 0 || counts.audios > 0) {
       return "Grok Video Channel 仅支持图片素材";

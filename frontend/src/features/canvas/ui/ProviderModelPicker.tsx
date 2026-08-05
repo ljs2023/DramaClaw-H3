@@ -90,11 +90,47 @@ export const DEFAULT_SHARED_MODEL_ID = 'huimeng/gpt-image-2';
 // Video generation models. `id` is the raw backend model id sent to
 // /freezone/video/gen so we don't need a separate apiModel mapping.
 export const VIDEO_PROVIDERS: ProviderOption[] = [
+  { id: 'local', label: '本地模型' },
   { id: 'seedance', label: 'Seedance' },
   { id: 'huimeng', label: '绘梦 / HuiMeng' },
 ];
 
 export const VIDEO_MODELS: ModelOption[] = [
+  {
+    id: 'comfyui_h3',
+    providerId: 'local',
+    apiModel: 'comfyui_h3',
+    label: 'MiniMax H3 Local',
+    resolutionOptions: ['480p'],
+    minDuration: 5,
+    maxDuration: 15,
+    supportedModes: ['first_frame', 'first_last_frame', 'image_reference'],
+    referenceImageMax: 9,
+    referenceVideoMax: 0,
+    referenceAudioMax: 0,
+    request: {
+      endpoint: 'video/generations',
+      parameters: [
+        {
+          key: 'h3_preset',
+          label: 'H3质量',
+          control: 'select',
+          requestPath: 'h3_preset',
+          options: ['QUALITY', 'FAST', 'TURBO'],
+          default: 'FAST',
+        },
+        {
+          key: 'seed',
+          label: '固定 Seed（高级）',
+          control: 'number',
+          requestPath: 'seed',
+          min: 0,
+          max: 281474976710655,
+          step: 1,
+        },
+      ],
+    },
+  },
   {
     id: 'newapi_seedance-2.0-fast',
     providerId: 'seedance',
