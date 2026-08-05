@@ -7,6 +7,9 @@ WORKDIR /app
 ARG VITE_APP_VERSION=dev
 ENV VITE_APP_VERSION=${VITE_APP_VERSION}
 
+# The registry remains overridable for deployments outside mainland China.
+ARG PNPM_REGISTRY=https://registry.npmmirror.com
+
 # CE release fallback edition. Edition is normally decided at runtime by the
 # backend (GET /api/v1/config); VITE_EDITION only takes effect when that fetch
 # fails, so baking =ce makes this CE image fail safe to CE (no EE login wall)
@@ -21,7 +24,10 @@ ENV VITE_EDITION=${VITE_EDITION}
 # keep `pnpm install` from erroring on skipped (unneeded) dependency build scripts.
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
+RUN pnpm config set registry "${PNPM_REGISTRY}" \
+    && pnpm config set fetch-retries 5 \
+    && pnpm config set fetch-timeout 300000 \
+    && pnpm install --frozen-lockfile
 
 COPY . .
 RUN pnpm build
