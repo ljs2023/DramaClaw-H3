@@ -368,16 +368,18 @@ async def _start_or_enqueue_freezone_video_gen(
         freezone_video_generate_task_billing,
     )
 
-    billing = freezone_video_generate_task_billing(
-        {
-            "video_backend": backend,
-            "resolution": resolution,
-            "pricing_quantity": duration_seconds,
-            "operation": gen_mode or "textToVideo",
-            "generate_audio": generate_audio,
-            **({"catalog_id": catalog_id} if catalog_id else {}),
-        }
-    )
+    billing = None
+    if not is_freezone_h3_backend(backend):
+        billing = freezone_video_generate_task_billing(
+            {
+                "video_backend": backend,
+                "resolution": resolution,
+                "pricing_quantity": duration_seconds,
+                "operation": gen_mode or "textToVideo",
+                "generate_audio": generate_audio,
+                **({"catalog_id": catalog_id} if catalog_id else {}),
+            }
+        )
     payload = {
         "job_id": job_id,
         "canvas_id": canvas_id or "",
@@ -399,10 +401,11 @@ async def _start_or_enqueue_freezone_video_gen(
         "last_frame_path": last_frame_path,
         "audio_setting": audio_setting or "",
         "project_dir": str(project_dir),
-        "billing": billing,
         "model_params": model_params or {},
         "request_schema": request_schema or {},
     }
+    if billing is not None:
+        payload["billing"] = billing
     if ctx is not None:
         queued = await get_task_backend().enqueue_project_task(
             ctx,

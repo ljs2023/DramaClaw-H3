@@ -1,9 +1,13 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from novelvideo.freezone.jobs import run_freezone_video_gen
-from novelvideo.api.routes.freezone import _resolve_catalog_request
+from novelvideo.api.routes.freezone import (
+    _resolve_catalog_request,
+    _start_or_enqueue_freezone_video_gen,
+)
 from novelvideo.freezone.video_node import (
     get_freezone_video_model_options,
     normalize_video_resolution_for_backend,
@@ -118,3 +122,53 @@ async def test_ce_h3_model_params_accept_quality_and_fixed_seed(monkeypatch):
         "first_last_frame",
         "image_reference",
     ]
+
+
+@pytest.mark.asyncio
+async def test_local_h3_project_task_skips_cloud_credit_model_resolution(
+    monkeypatch, tmp_path
+):
+    captured = {}
+
+    def unexpected_cloud_billing(_params):
+        raise AssertionError("local H3 must not resolve a cloud credit model")
+
+    class FakeTaskBackend:
+        async def enqueue_project_task(self, _ctx, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                task_state=SimpleNamespace(task_id="task-h3-local"),
+                backend="inline",
+                queue=None,
+            )
+
+    monkeypatch.setattr(
+        "novelvideo.api.routes.model_credits.freezone_video_generate_task_billing",
+        unexpected_cloud_billing,
+    )
+    monkeypatch.setattr(
+        "novelvideo.api.routes.freezone.get_task_backend",
+        lambda: FakeTaskBackend(),
+    )
+
+    response = await _start_or_enqueue_freezone_video_gen(
+        ctx=SimpleNamespace(project_id="project-h3-local"),
+        username="local",
+        project="H3_Public_Smoke",
+        project_dir=tmp_path,
+        output_dir=str(tmp_path / "output"),
+        job_id="job-h3-local",
+        prompt="test",
+        reference_items=[],
+        aspect_ratio="9:16",
+        resolution="480p",
+        duration_seconds=5,
+        generate_audio=False,
+        human_review=False,
+        scene_optimize=None,
+        backend="comfyui_h3",
+    )
+
+    assert response["ok"] is True
+    assert captured["payload"]["backend"] == "comfyui_h3"
+    assert "billing" not in captured["payload"]
