@@ -7,6 +7,7 @@
 #   docker compose -f docker-compose.selfhosted.yml up
 services:
   api:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile
@@ -48,6 +49,7 @@ services:
   # they are overridden to the compose `api` service (internal port 8780). Open
   # the app at http://localhost:8080 — the browser only ever talks to web.
   web:
+    restart: unless-stopped
     build:
       context: ./frontend
       dockerfile: Dockerfile
