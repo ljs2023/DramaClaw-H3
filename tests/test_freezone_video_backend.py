@@ -12,6 +12,7 @@ from novelvideo.generators.video_generator import (
     newapi_video_backend_options,
 )
 from novelvideo.generators.video_generator import VideoGenResult, VideoGenStatus
+from novelvideo.video_duration import video_duration_bounds_for_backend
 from novelvideo.freezone.video_node import (
     add_video_character_library_item,
     build_freezone_image_to_video_prompt,
@@ -31,6 +32,7 @@ from novelvideo.freezone.video_node import (
     normalize_video_resolution_for_backend,
     resolve_freezone_video_backend,
     summarize_omni_reference_counts,
+    validate_omni_reference_audio_durations,
     validate_omni_reference_limits,
 )
 
@@ -94,7 +96,7 @@ def test_build_freezone_omni_video_prompt_includes_theme() -> None:
     assert "氧气管" in prompt
 
 
-def test_build_freezone_image_to_video_prompt_includes_first_frame_and_marks() -> None:
+def test_build_freezone_image_to_video_prompt_uses_image_reference_semantics() -> None:
     prompt = build_freezone_image_to_video_prompt(
         user_prompt="老人缓慢抬眼，呼吸微弱。",
         camera_template_id="pedestal_up",
@@ -105,7 +107,9 @@ def test_build_freezone_image_to_video_prompt_includes_first_frame_and_marks() -
     assert "镜头上升" in prompt
     assert "老人" in prompt
     assert "主体" in prompt
-    assert "首帧约束" in prompt
+    assert "图片参考约束" in prompt
+    assert "不要强制把输入图片锁定为视频第一帧" in prompt
+    assert "首帧约束" not in prompt
 
 
 def test_build_freezone_image_to_video_prompt_supports_multi_image_references() -> None:
@@ -226,6 +230,22 @@ def test_video_duration_normalization_uses_ceiling_and_backend_bounds() -> None:
         "newapi_seedance-1.0-pro-fast",
         5.1,
     ) == 6
+
+
+def test_seedance_mini_duration_fallback_with_legacy_env(monkeypatch) -> None:
+    from novelvideo import config
+
+    monkeypatch.setattr(
+        config,
+        "NEWAPI_VIDEO_DURATION_BOUNDS",
+        "seedance-1.0-pro-fast:2-12,seedance-2.0:4-15",
+    )
+
+    backend = "newapi_seedance-2.0-mini"
+    assert video_duration_bounds_for_backend(backend) == (4, 15)
+    assert normalize_video_duration_for_backend(backend, 2) == 4
+    assert normalize_video_duration_for_backend(backend, 13) == 13
+    assert normalize_video_duration_for_backend(backend, 20) == 15
 
 
 def test_newapi_video_backend_preserves_gateway_model_case() -> None:
@@ -350,6 +370,41 @@ async def test_freezone_video_gen_allows_newapi_fast_text_to_video(monkeypatch, 
     assert captured["generate"]["references"] == []
 
 
+@pytest.mark.asyncio
+async def test_freezone_keyframe_tail_only_does_not_promote_tail_to_first_frame(
+    monkeypatch, tmp_path: Path
+):
+    captured: dict[str, dict] = {}
+
+    class FakeVideoGenerator:
+        async def generate(self, **kwargs):
+            captured["generate"] = kwargs
+            output_path = Path(kwargs["output_path"])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"fake mp4")
+            return VideoGenResult(status=VideoGenStatus.DONE, video_path=str(output_path))
+
+    monkeypatch.setattr(
+        "novelvideo.generators.video_generator.create_video_generator",
+        lambda **_kwargs: FakeVideoGenerator(),
+    )
+
+    tail_path = tmp_path / "tail.png"
+    tail_path.write_bytes(b"fake image")
+    await run_freezone_video_gen(
+        project_dir=tmp_path,
+        job_id="job_tail_only",
+        prompt="最终停在目标构图",
+        reference_items=[{"type": "image", "path": str(tail_path), "role": "尾帧"}],
+        backend="newapi_seedance-2.0",
+        last_frame_path=str(tail_path),
+        gen_mode="first_last_frame",
+    )
+
+    assert captured["generate"]["image_path"] is None
+    assert captured["generate"]["last_frame_path"] == str(tail_path)
+
+
 def test_seedance2_model_selection_prefers_omni_model_for_mixed_references() -> None:
     generator = object.__new__(Seedance2VideoGenerator)
 
@@ -431,4 +486,94 @@ def test_validate_omni_reference_limits_and_summary() -> None:
             video_max=0,
             audio_max=0,
             total_max=2,
+        )
+
+
+def test_validate_omni_reference_audio_durations_per_clip_bounds() -> None:
+    # 厂商逐条口径：1.8s ≤ 时长 ≤ 15.2s，两端都是闭区间。
+    validate_omni_reference_audio_durations([("a.wav", 1.8)])
+    validate_omni_reference_audio_durations([("a.wav", 15.2)])
+
+    with pytest.raises(ValueError, match=r"must be >= 1\.8s") as short_exc:
+        validate_omni_reference_audio_durations([("ok.wav", 5.0), ("tiny.wav", 0.9)])
+    # 只点名越界的那条，别把合规的也列进去让用户猜。
+    assert "tiny.wav (0.9s)" in str(short_exc.value)
+    assert "ok.wav" not in str(short_exc.value)
+
+    with pytest.raises(ValueError, match=r"must be <= 15\.2s"):
+        validate_omni_reference_audio_durations([("long.wav", 15.201)])
+
+
+def test_validate_omni_reference_audio_durations_total_bound() -> None:
+    """3 条各 6s：逐条全合规，总计 18s —— 2026-08-06 3060 两次任务就死在这。
+
+    厂商报文：`audio total duration (seconds) ... must be less than or equal to 15.2
+    for model doubao-seedance-2-0 in r2v`。别把这条当成多余的本地规则删掉。
+    """
+    with pytest.raises(ValueError, match="total duration must be <= 15.2s") as exc:
+        validate_omni_reference_audio_durations(
+            [("a.wav", 6.0), ("b.wav", 6.0), ("c.wav", 6.0)]
+        )
+    assert "got 18s" in str(exc.value)
+
+    # 顶格 15.2s 必须放行：浮点和会漂到 15.200000000000001，裸比较会误拦。
+    validate_omni_reference_audio_durations(
+        [("a.wav", 6.0), ("b.wav", 6.0), ("c.wav", 3.2)]
+    )
+    # 单条顶格同样不能被总和这条误伤（兜底上限与单条上限同值）。
+    validate_omni_reference_audio_durations([("a.wav", 15.2)])
+
+    # 单条越界优先上报：先换掉那条，再谈整体裁剪。
+    with pytest.raises(ValueError, match="must be <= 15.2s"):
+        validate_omni_reference_audio_durations([("a.wav", 20.0), ("b.wav", 6.0)])
+
+    # 上限走传入值（后台 referenceAudioTotalMaxSeconds）。
+    validate_omni_reference_audio_durations(
+        [("a.wav", 6.0), ("b.wav", 6.0)], total_max_seconds=30.0
+    )
+    with pytest.raises(ValueError, match="total duration must be <= 10s"):
+        validate_omni_reference_audio_durations(
+            [("a.wav", 6.0), ("b.wav", 6.0)], total_max_seconds=10.0
+        )
+
+
+def test_validate_omni_reference_audio_durations_skips_unmeasured() -> None:
+    """探测不出的条目不参与判定——漏算只会让和更小，不会因此误拦。"""
+    validate_omni_reference_audio_durations([("unknown.wav", None)])
+    validate_omni_reference_audio_durations(
+        [("a.wav", 6.0), ("unknown.wav", None), ("c.wav", 6.0)]
+    )
+    validate_omni_reference_audio_durations([])
+    # 0 / 负数是 ffprobe 的垃圾输出，同样按「测不出」处理，别当成一条 0s 的太短音频。
+    validate_omni_reference_audio_durations([("weird.wav", 0.0), ("neg.wav", -1.0)])
+
+
+def test_validate_reference_duration_total_min_requires_complete_measurement() -> None:
+    with pytest.raises(ValueError, match="total duration must be >= 10s"):
+        validate_omni_reference_audio_durations(
+            [("a.wav", 4.0), ("b.wav", 5.0)],
+            min_seconds=None,
+            max_seconds=None,
+            total_min_seconds=10,
+            total_max_seconds=None,
+        )
+
+    # 有一条无法探测时，已知总和只是下界，不能据此误判低于总时长下限。
+    validate_omni_reference_audio_durations(
+        [("a.wav", 4.0), ("unknown.wav", None)],
+        min_seconds=None,
+        max_seconds=None,
+        total_min_seconds=10,
+        total_max_seconds=None,
+    )
+
+
+def test_validate_reference_duration_uses_video_label() -> None:
+    with pytest.raises(ValueError, match="video reference duration must be <= 8s"):
+        validate_omni_reference_audio_durations(
+            [("clip.mp4", 9.0)],
+            min_seconds=None,
+            max_seconds=8,
+            total_max_seconds=None,
+            media_label="video",
         )

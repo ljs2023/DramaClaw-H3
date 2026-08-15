@@ -108,6 +108,8 @@ import {
 } from '@/features/canvas/domain/nodeRegistry';
 import { nodeCatalog } from '@/features/canvas/application/nodeCatalog';
 import { applySkillRoleBindingConnection } from '@/features/canvas/domain/skillConnectionEdges';
+import { videoReferenceConnectionRejection } from '@/features/canvas/domain/videoReferenceLimits';
+import { videoReferenceEnvelopeForNode } from '@/features/canvas/application/videoReferenceEnvelope';
 import { embedStoryboardImageMetadata } from '@/commands/image';
 import { nodeTypes as canvasNodeTypes } from './nodes';
 import { edgeTypes as canvasEdgeTypes } from './edges';
@@ -131,6 +133,7 @@ import { CanvasMinimapButton } from './ui/CanvasMinimapButton';
 import { CanvasFpsMeter } from './ui/CanvasFpsMeter';
 import { CanvasSnapAlignButton } from './snap-align/CanvasSnapAlignButton';
 import { useTrackpadPanStore } from './trackpad-pan/trackpadPanStore';
+import { useSmoothMinimapPan } from './hooks/useSmoothMinimapPan';
 import { useCanvasToolStore } from './ui/canvasToolStore';
 import { SnapAlignGuides } from './snap-align/SnapAlignGuides';
 import { useSnapAlignStore } from './snap-align/snapAlignStore';
@@ -165,6 +168,8 @@ const PAN_ON_DRAG_BUTTONS = [1];
 // 抓手光标由它自带的样式负责。
 const PAN_ON_DRAG_BUTTONS_HAND = [0, 1];
 const NODE_SPAWN_PLUS_HIDE_DELAY_MS = 400;
+/** 小地图 hover 离开后的收起延迟，见 setMinimapHover 处的注释。 */
+const MINIMAP_HIDE_DELAY_MS = 180;
 
 function resolveCenteredViewport(
   container: HTMLElement | null,
@@ -743,7 +748,11 @@ export function Canvas({
 
   const [minimapPinned, setMinimapPinned] = useState(false);
   const [minimapHovered, setMinimapHovered] = useState(false);
-  const minimapVisible = minimapPinned || minimapHovered;
+  // 小地图拖动期间必须钉住不卸载：非固定模式下指针一拖出小地图就会触发
+  // onMouseLeave → 180ms 后 minimapVisible 变 false → MiniMap 卸载 →
+  // useSmoothMinimapPan 的清理函数摘掉 window 监听，拖动直接断在半路。
+  const [minimapPanning, setMinimapPanning] = useState(false);
+  const minimapVisible = minimapPinned || minimapHovered || minimapPanning;
   // 小地图弹层（含上方的书签数字行）靠 hover 显示。数字行是小地图上方、隔着间隙的
   // 独立 DOM 子树:鼠标从小地图移到数字按钮的途中会先离开小地图,若立即把
   // minimapHovered 置 false,整个 overlay 会在点到按钮前卸载,导致「点不了」。
@@ -761,9 +770,28 @@ export function Canvas({
       minimapHideTimerRef.current = window.setTimeout(() => {
         setMinimapHovered(false);
         minimapHideTimerRef.current = null;
-      }, 180);
+      }, MINIMAP_HIDE_DELAY_MS);
     }
   }, []);
+  // 小地图缓动期间，onMoveEnd 的逐帧视口提交要跳过 —— 见 handleMoveEnd 的注释。
+  // 用 ref 而不是读 minimapPanning：handleMoveEnd 每帧都跑，不该跟着状态换身份。
+  const minimapPanCommitSuppressedRef = useRef(false);
+  const handleMinimapPanStart = useCallback(() => {
+    minimapPanCommitSuppressedRef.current = true;
+    setMinimapPanning(true);
+  }, []);
+  // 这里的「结束」是 hook 保证的「松手且缓动已收敛」，不是 pointerup 那一刻，
+  // 所以可以直接解除挂载保护，不需要再赌一个固定延时（收敛耗时随剩余距离变化，
+  // 180ms 盖不住，会把缓动掐断在半路）。
+  const handleMinimapPanEnd = useCallback(
+    (pointerInsideMinimap: boolean) => {
+      minimapPanCommitSuppressedRef.current = false;
+      setMinimapPanning(false);
+      // 松手在小地图内 ⇒ 继续显示；在外 ⇒ 走 hover 的同一节奏收起。
+      setMinimapHover(pointerInsideMinimap);
+    },
+    [setMinimapHover],
+  );
   useEffect(
     () => () => {
       if (minimapHideTimerRef.current !== null) {
@@ -1314,6 +1342,19 @@ export function Canvas({
     clearPendingFocus();
   }, [pendingFocusNodeId, nodes, reactFlowInstance, clearPendingFocus]);
 
+  // 低缩放档（10% 之类）下新节点在屏幕上只有几十像素、深色面板贴深色背景，
+  // 创建成功也近乎不可见，用户会以为「没创建上」。所有「凭空新建节点」的入口
+  // 都复用上面的聚焦机制：视口动画拉近到新节点（zoom 提到 ≥0.6），创建即所见、
+  // 且直接可编辑。常用工作缩放下不聚焦，避免打断用户的构图视角。
+  const focusNewNodeIfLowZoom = useCallback(
+    (nodeId: string) => {
+      if (isLowDetailZoom(reactFlowInstance.getZoom())) {
+        requestFocusNode(nodeId);
+      }
+    },
+    [reactFlowInstance, requestFocusNode],
+  );
+
   useEffect(() => {
     const sleep = (delayMs: number) =>
       new Promise<void>((resolve) => {
@@ -1805,6 +1846,18 @@ export function Canvas({
       if (sourceNode && !canNodeTypeBeManualConnectionSource(sourceNode.type, targetNode.type)) {
         return false;
       }
+      // 视频节点的素材已经满到能力包络（图 9 / 视频 3 / 音频 3 / 总数 12）时，
+      // 拖线落点变灰、不成边。与 store 的 onConnect 收口同一把尺子。
+      if (
+        videoReferenceConnectionRejection(
+          nodes,
+          edges,
+          connection,
+          videoReferenceEnvelopeForNode,
+        ) != null
+      ) {
+        return false;
+      }
       if (targetNode.type !== CANVAS_NODE_TYPES.threeDWorld) return true;
       return !edges.some(
         (edge) => edge.target === targetId && edge.source !== connection.source,
@@ -1855,7 +1908,6 @@ export function Canvas({
 
   const handleMoveEnd = useCallback(
     (_event: unknown, viewport: Viewport) => {
-      lastViewportCommitRef.current = Date.now();
       applyLowDetailClass(viewport.zoom);
       // 降档（进入低缩放）的裁剪关闭只在手势结束时提交：全量挂载 ~240 个 shell 的
       // 波放在缩放手势中途会有可感知的顿挫，推迟到松手后手势保持流畅；中途已跨档
@@ -1870,6 +1922,17 @@ export function Canvas({
         wrapperRef.current?.classList.remove(CANVAS_PANNING_CLASS);
         setCanvasGestureActive(false);
       }, PANNING_CLASS_RELEASE_DELAY_MS);
+      // 小地图缓动是程序化平移：每帧一次 instance.setViewport，而 ReactFlow 对
+      // 每次 setViewport 都跑一遍 onMoveStart→onMove→onMoveEnd，结束事件只有
+      // panOnScroll 才有 150ms 合并（createPanZoomEndHandler 里写死
+      // `panOnScroll ? 150 : 0`）。用户关掉「触控板平移」后 panOnScroll=false，
+      // 合并消失，这里会变成每秒约 60 次 store 提交 —— 正是本次要消掉的东西。
+      // 跳过时连 lastViewportCommitRef 也不占，好让 handleMove 的 8fps 节流照常
+      // 供给可见性判断；最终值由 onViewportSettled 收敛时提交一次。
+      if (minimapPanCommitSuppressedRef.current) {
+        return;
+      }
+      lastViewportCommitRef.current = Date.now();
       setViewportState(viewport);
     },
     [applyLowDetailClass, setViewportState]
@@ -1888,6 +1951,27 @@ export function Canvas({
     },
     [applyLowDetailClass, setViewportState]
   );
+
+  const handleMinimapViewportSettled = useCallback(
+    (viewport: Viewport) => {
+      lastViewportCommitRef.current = Date.now();
+      setViewportState(viewport);
+    },
+    [setViewportState]
+  );
+
+  // 小地图拖动走自己的实现，不用 MiniMap 的 pannable —— 内置增益会随视口拖离
+  // 内容区而复利放大。见 useSmoothMinimapPan 的文件头注释。
+  // 接线放在 handleMoveEnd/handleMinimapViewportSettled 之后，它们依赖 store 的
+  // setViewportState，声明顺序不能倒过来。
+  useSmoothMinimapPan({
+    enabled: minimapVisible,
+    wrapperRef,
+    instance: reactFlowInstance,
+    onPanStart: handleMinimapPanStart,
+    onPanEnd: handleMinimapPanEnd,
+    onViewportSettled: handleMinimapViewportSettled,
+  });
 
   // 首屏恢复的视口不会触发 onMove/onMoveEnd，低缩放档要在这里补一次。
   useEffect(() => {
@@ -2065,13 +2149,7 @@ export function Canvas({
         pendingNodePlacement.initialData,
       );
       setSelectedNode(newNodeId);
-      // 低缩放档下新节点在屏幕上只有几十像素、深色面板贴深色背景，放置成功也
-      // 近乎不可见（用户会以为「没创建上」）。复用资产拖入的聚焦机制：视口动画
-      // 拉近到新节点（zoom 提到 ≥0.6），落点即所见、且直接可编辑。常用工作缩放
-      // 下不聚焦，避免打断用户的构图视角。
-      if (isLowDetailZoom(reactFlowInstance.getZoom())) {
-        requestFocusNode(newNodeId);
-      }
+      focusNewNodeIfLowZoom(newNodeId);
       if (pendingNodePlacement.skill) {
         bindSingleBeatContextInput(newNodeId, pendingNodePlacement.skill);
       }
@@ -2085,9 +2163,9 @@ export function Canvas({
     [
       addNode,
       bindSingleBeatContextInput,
+      focusNewNodeIfLowZoom,
       pendingNodePlacement,
       reactFlowInstance,
-      requestFocusNode,
       scheduleCanvasPersist,
       setSelectedNode,
       triggerPlacementConfirm,
@@ -3069,6 +3147,7 @@ export function Canvas({
         }
       }
 
+      focusNewNodeIfLowZoom(newNodeId);
       scheduleCanvasPersist(0);
       setShowNodeMenu(false);
       setMenuAllowedTypes(undefined);
@@ -3078,6 +3157,7 @@ export function Canvas({
     },
     [
       connectGraphNodes,
+      focusNewNodeIfLowZoom,
       pendingBatchConnectIds,
       pendingConnectStart,
       scheduleCanvasPersist,
@@ -3197,9 +3277,10 @@ export function Canvas({
     (type: CanvasNodeType) => {
       const newNodeId = addNode(type, spawnAtViewportCenter());
       setSelectedNode(newNodeId);
+      focusNewNodeIfLowZoom(newNodeId);
       scheduleCanvasPersist(0);
     },
-    [addNode, scheduleCanvasPersist, setSelectedNode, spawnAtViewportCenter],
+    [addNode, focusNewNodeIfLowZoom, scheduleCanvasPersist, setSelectedNode, spawnAtViewportCenter],
   );
 
   const handleQuickAddSkill = useCallback(
@@ -3210,10 +3291,18 @@ export function Canvas({
         displayName: skill.display_name,
       } as Partial<CanvasNodeData>);
       setSelectedNode(newNodeId);
+      focusNewNodeIfLowZoom(newNodeId);
       bindSingleBeatContextInput(newNodeId, skill);
       scheduleCanvasPersist(0);
     },
-    [addNode, bindSingleBeatContextInput, scheduleCanvasPersist, setSelectedNode, spawnAtViewportCenter],
+    [
+      addNode,
+      bindSingleBeatContextInput,
+      focusNewNodeIfLowZoom,
+      scheduleCanvasPersist,
+      setSelectedNode,
+      spawnAtViewportCenter,
+    ],
   );
 
   // 历史资产弹窗「使用」：把该资产作为新节点生成到视口中心（复用素材落点的 spawnAssetNode）。
@@ -3892,6 +3981,24 @@ export function Canvas({
     }
   }, []);
 
+  // 手动建边落到某个节点上时，这条边会不会把视频节点的素材撑过能力包络？非空即拒绝。
+  // 三条手动路径（React Flow 拖线松手、"+" 拖拽的落点高亮、"+" 松手建边）共用同一把
+  // 尺子——少一处就会出现「拖过去高亮成合法、一松手什么也没有」。
+  const manualDropReferenceRejection = useCallback(
+    (pending: PendingConnectStart, dropNodeId: string | null): string | null => {
+      if (!dropNodeId || dropNodeId === pending.nodeId) return null;
+      const sourceId = pending.handleType === 'source' ? pending.nodeId : dropNodeId;
+      const targetId = pending.handleType === 'source' ? dropNodeId : pending.nodeId;
+      return videoReferenceConnectionRejection(
+        nodes,
+        edges,
+        { source: sourceId, target: targetId },
+        videoReferenceEnvelopeForNode,
+      );
+    },
+    [edges, nodes],
+  );
+
   const handleConnectEnd = useCallback(
     (event: MouseEvent | TouchEvent, connectionState: FinalConnectionState) => {
       if (connectionState.isValid || !pendingConnectStart) {
@@ -3916,6 +4023,21 @@ export function Canvas({
       const dropNodeId = dropNodeElement?.dataset?.id ?? null;
 
       if (dropNodeId && dropNodeId !== pendingConnectStart.nodeId) {
+        // 素材撑过能力包络：这条分支是 connectionState.isValid 为 false 才走到的
+        // 补救路径，**不看** isValidConnection，必须自己拦。不拦就会一路掉进下面
+        // 「拖到空白处 → 弹新建节点菜单」，用户明明松手在节点上却弹出个菜单。
+        // 顺带 toast 出原因——落点变灰本身不解释「为什么」。
+        const referenceRejection = manualDropReferenceRejection(
+          pendingConnectStart,
+          dropNodeId,
+        );
+        if (referenceRejection) {
+          toast.warning(referenceRejection);
+          setPendingConnectStart(null);
+          setPreviewConnectionVisual(null);
+          return;
+        }
+
         const sourceNode =
           pendingConnectStart.handleType === 'source'
             ? nodes.find((node) => node.id === pendingConnectStart.nodeId)
@@ -4036,6 +4158,7 @@ export function Canvas({
     },
     [
       connectGraphNodes,
+      manualDropReferenceRejection,
       nodes,
       pendingConnectStart,
       reactFlowInstance,
@@ -4110,6 +4233,9 @@ export function Canvas({
       const validate = (el: HTMLElement | null): HTMLElement | null => {
         const dropNodeId = el?.dataset?.id ?? null;
         if (!el || !dropNodeId || dropNodeId === pending.nodeId) return null;
+        // 素材已满的视频节点不高亮成落点（与拖线时落点变灰同一口径）；松手那一下
+        // 由 handlePlusConnectDragEnd 再 toast 出原因。
+        if (manualDropReferenceRejection(pending, dropNodeId)) return null;
         const sourceNode =
           pending.handleType === 'source'
             ? nodes.find((node) => node.id === pending.nodeId)
@@ -4168,7 +4294,7 @@ export function Canvas({
         });
       return best;
     },
-    [nodes],
+    [manualDropReferenceRejection, nodes],
   );
 
   const handlePlusConnectDragStart = useCallback((params: PlusConnectDragParams) => {
@@ -4258,6 +4384,23 @@ export function Canvas({
 
       const containerRect = wrapperRef.current?.getBoundingClientRect();
       if (!pending || !containerRect) {
+        setPendingConnectStart(null);
+        setPreviewConnectionVisual(null);
+        return;
+      }
+
+      // 素材已满的视频节点上面 resolveManualDropTargetEl 不会认作落点（不高亮），
+      // 松手就会掉进「拖到空白处 → 弹新建节点菜单」。所以先单独看光标正下方压着
+      // 谁：确实是被素材上限挡下的，就 toast 出原因并收工，别弹那个菜单。
+      const hoveredNodeId =
+        (
+          document
+            .elementFromPoint(params.clientPosition.x, params.clientPosition.y)
+            ?.closest?.('.react-flow__node[data-id]') as HTMLElement | null
+        )?.dataset?.id ?? null;
+      const hoveredRejection = manualDropReferenceRejection(pending, hoveredNodeId);
+      if (hoveredRejection) {
+        toast.warning(hoveredRejection);
         setPendingConnectStart(null);
         setPreviewConnectionVisual(null);
         return;
@@ -4355,6 +4498,7 @@ export function Canvas({
     },
     [
       connectGraphNodes,
+      manualDropReferenceRejection,
       nodes,
       reactFlowInstance,
       scheduleCanvasPersist,
@@ -4687,7 +4831,9 @@ export function Canvas({
             style={{ pointerEvents: 'all', zIndex: 10000 }}
             nodeColor="rgba(120, 120, 120, 0.92)"
             maskColor="rgba(0, 0, 0, 0.62)"
-            pannable
+            // 拖动由 useSmoothMinimapPan 接管：内置 pannable 的增益含当前视口框，
+            // 视口拖出内容区后会复利放大，越拖越快。
+            pannable={false}
             zoomable
             onMouseEnter={() => setMinimapHover(true)}
             onMouseLeave={() => setMinimapHover(false)}

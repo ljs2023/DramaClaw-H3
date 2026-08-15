@@ -1,33 +1,30 @@
 ---
-version: 1.2.1
+version: 1.3.2
 attention: low
 ---
-# v1.2.1
+# v1.3.2
 
 ## User-facing Highlights (zh)
 
-- **媒体生成参数更可靠**: 视频比例、分辨率和模型专用参数会完整传递,并修正 2K、4K 等尺寸换算及积分不足提示。
-- **小说导入进度更清晰**: 构建知识图谱时持续展示当前阶段、完成比例和已用时间,长时间导入不再像卡住一样。
-- **旧项目规划兼容性提升**: 无标准场景标题的历史剧本也可重新规划场景,Beat 生成与资产规划统一使用当前制作正文。
-- **任务与积分界面更稳定**: 修复草图编辑进度回退,积分中心改为更清晰的中性配色并让记录表格独立滚动。
+- **本地 ComfyUI 配置更简单**: MiniMax H3 现在以单一模型接入多个 Workflow，由虾驿根据文生视频、首帧或全能参考模式自动选择流程，并支持一键清理本地配置。
+- **视频生成模式更准确**: 画布选择的首帧、首尾帧等业务模式会在校验、计费、任务执行和历史恢复中保持一致，不再根据素材数量被静默改写。
+- **主线生成默认值优化**: 场景参考图提升为中等质量，主线视频模型列表加入 Seedance 2.0 Mini 并精简不推荐选项，同时将新小说上传上限调整为 512KB。
 
 ## User-facing Highlights (en)
 
-- **More reliable media parameters**: Video ratios, resolutions, and model-specific options are preserved, with corrected 2K/4K sizing and clearer insufficient-credit errors.
-- **Clearer novel import progress**: Knowledge-graph imports now show live stages, percentage, and elapsed time so long-running work no longer appears stalled.
-- **Better compatibility for existing projects**: Legacy scripts without standard scene headings can be planned again, while Beat generation and asset planning use the same production text.
-- **More stable task and credit screens**: Sketch-edit progress no longer jumps backward, and the credit center gains clearer neutral styling with an independently scrolling history table.
+- **Simpler local ComfyUI setup**: MiniMax H3 now uses one model entry for multiple workflows, with RelayClaw selecting the appropriate text-to-video, first-frame, or all-reference workflow and an option to clear local configuration in one action.
+- **More accurate video generation modes**: Canvas selections such as first-frame and first/last-frame now remain consistent through validation, billing, task execution, and history restoration instead of being silently changed based on reference count.
+- **Improved mainline defaults**: Scene reference images now use medium quality, Seedance 2.0 Mini is available while less suitable mainline choices are hidden, and the new novel upload limit is set to 512KB.
+
+## New Features
+
+- 简化本地 ComfyUI 配置，使用单一 MiniMax-H3-local 模型承载多个 Workflow，并支持一键清理配置 (#277).
+- 主线视频模型新增 Seedance 2.0 Mini，并保留已有项目和任务对旧模型的执行兼容性 (#267).
 
 ## Bug Fixes
 
-- 修复 NewAPI 视频请求丢失比例、分辨率和模型专用参数的问题,并修正 2K、4K 尺寸换算及积分不足提示 (#235).
-- 修复知识图谱导入期间普通日志导致进度归零的问题,新增实时阶段和计时展示 (#232).
-- 修复历史剧本缺少标准场景标题时无法重新规划场景的问题 (#230).
-- 统一 Beat 生成与资产规划的制作正文来源,避免跳过改编稿 (#231).
-- 修复草图编辑任务在输出日志时进度条回退到零的问题 (#233).
+- 修复首帧、首尾帧等视频生成模式会因参考图片数量而被错误改写的问题 (#273).
 
 ## Improvements
 
-- 移除 Beat 脚本流程中未使用的旧图谱工具和重复状态加载,保持现有生成行为不变 (#234).
-- 优化积分中心配色、筛选控件及长列表滚动体验 (#237).
-- 虾导入口暂时显示升级提示,避免用户进入尚未完成的功能 (#216).
+- 将场景参考图质量提升为 medium，并同步实际请求的计费参数；新小说上传限制调整为 512KB (#267).

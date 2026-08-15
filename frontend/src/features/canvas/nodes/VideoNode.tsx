@@ -66,13 +66,19 @@ import {
 import {
   audioReferenceDurationRejection,
   formatAudioDurationClips,
+  formatAudioDurationSeconds,
   MAX_AUDIO_REFERENCE_DURATION_MS,
+  MAX_AUDIO_REFERENCE_TOTAL_DURATION_MS,
   MIN_AUDIO_REFERENCE_DURATION_MS,
+  referenceDurationLimitsMs,
   isHappyHorseVideoModel,
   isSeedance2VideoModel,
+  isVideoModeSupportedByModel,
+  resolveVideoKeyframeUrls,
   videoEmptyStateCtaModes,
   videoModeRequiresPrompt,
   videoModelReferenceDisabledReason,
+  videoMultiImageAutoSwitchMode,
   videoReferenceAutoSwitchAction,
   videoSubmitMediaRejectionReason,
   videoUpstreamImageDefaultMode,
@@ -89,6 +95,10 @@ import {
   requestLodStill,
   subscribeLodStills,
 } from "@/features/canvas/application/videoFrameCapture";
+import {
+  FALLBACK_VIDEO_ASPECT_OPTIONS,
+  FALLBACK_VIDEO_RESOLUTION_OPTIONS,
+} from "@/features/canvas/domain/mediaModelOptions";
 import { ensureWebSafeVideo } from "@/features/canvas/application/videoTranscode";
 import { isVideoFile, VIDEO_FILE_ACCEPT } from "@/features/canvas/application/videoFileTypes";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
@@ -234,7 +244,8 @@ const VIDEO_EMPTY_STATE_CTA_META: Record<
 > = {
   allReference: { Icon: Sparkles, label: "全能参考" },
   imageReference: { Icon: Images, label: "图片参考" },
-  imageToVideo: { Icon: Film, label: "首帧生成视频" },
+  firstFrame: { Icon: Film, label: "首帧生成视频" },
+  imageToVideo: { Icon: Film, label: "图生视频" },
   firstLastFrame: { Icon: Layers, label: "首尾帧生成视频" },
 };
 
@@ -242,35 +253,32 @@ const VIDEO_EMPTY_STATE_CTA_META: Record<
 // 场景下）显式表达出来：超额 chip 标灰 + 从 @ 候选剔除，避免「prompt 引用了
 // @图片10 但提交时被静默丢掉」。
 //
-// 表里没出现的模式默认不限制（textToVideo 不消费上游、imageToVideo 走
-// `.slice(0, 9)` 自带兜底），各自走原有路径。
-//   - allReference (omni)  ：image 1-9 / video 0-3 / audio 0-3。音频另有**逐条**
-//                            1.8~15.2s 的厂商时长约束，在提交前单独校验（见
-//                            audioReferenceDurationRejection）；**没有总时长上限**，
-//                            服务端也不校验时长，别再往这张表里加总时长口径。
+// 表里没出现的模式默认不限制（textToVideo 不消费上游），走原有路径。
+//   - allReference (omni)  ：image 1-9 / video 0-3 / audio 0-3。音频另有两条厂商时长
+//                            约束——**逐条** 1.8~15.2s 和**总和** ≤15.2s（后台可配
+//                            referenceAudioTotalMaxSeconds）——都在提交前单独校验，
+//                            见 audioReferenceDurationRejection。时长口径不进这张表：
+//                            这里只表达条数。
 //   - firstLastFrame       ：仅图片 2 张（首帧 + 尾帧），不允许任何视频 / 音频。
 //                            图片 >2 时另有自动切到 allReference 的兜底（见
 //                            VideoNode 内部 effect）。
+//   - firstFrame / imageToVideo：都只接 1 张图；前者锁定首帧，后者作为整体画面参考。
 const REFERENCE_CAPS_BY_MODE: Partial<
   Record<VideoGenMode, { image: number; video: number; audio: number }>
 > = {
-  imageToVideo: { image: 9, video: 0, audio: 0 },
+  firstFrame: { image: 1, video: 0, audio: 0 },
+  imageToVideo: { image: 1, video: 0, audio: 0 },
   imageReference: { image: 9, video: 0, audio: 0 },
   videoEdit: { image: 5, video: 1, audio: 0 },
   allReference: { image: 9, video: 3, audio: 3 },
   firstLastFrame: { image: 2, video: 0, audio: 0 },
 };
 
-export const ASPECT_RATIOS: ReadonlyArray<FreezoneVideoAspectRatio> = [
-  "auto",
-  "16:9",
-  "4:3",
-  "1:1",
-  "3:4",
-  "9:16",
-  "21:9",
-];
-const QUALITIES: ReadonlyArray<VideoGenQuality> = ["480p", "720p", "1080p"];
+// 后台「媒体模型」未给该模型配置比例 / 分辨率时的兜底档位。正常路径下这两项
+// 都来自目录条目的 ratioOptions / resolutionOptions。
+export const ASPECT_RATIOS: ReadonlyArray<FreezoneVideoAspectRatio> =
+  FALLBACK_VIDEO_ASPECT_OPTIONS;
+const QUALITIES: ReadonlyArray<VideoGenQuality> = FALLBACK_VIDEO_RESOLUTION_OPTIONS;
 const SCENE_OPTIMIZE_OPTIONS: ReadonlyArray<Seedance2SceneOptimize> = ["anime", "realistic"];
 const DEFAULT_DURATION_MIN = 5;
 const DEFAULT_DURATION_MAX = 15;
@@ -315,33 +323,41 @@ export function clampVideoDuration(value: number, bounds: { min: number; max: nu
 // 音频节点的 durationMs 是懒加载的（波形播放器挂载读元数据后才写入），刚上传、
 // 从未渲染过的音频节点可能为 null。提交前用一个临时 <audio> 探测真实时长兜底，
 // 探测失败（CORS/网络等）返回 null，不阻断提交，交由后端兜底。
-function probeAudioDurationMs(url: string): Promise<number | null> {
+function probeMediaDurationMs(url: string, media: "audio" | "video"): Promise<number | null> {
   return new Promise((resolve) => {
     if (!url) {
       resolve(null);
       return;
     }
-    const audio = document.createElement("audio");
+    const element = document.createElement(media);
     let settled = false;
     const finish = (ms: number | null) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timer);
-      audio.onloadedmetadata = null;
-      audio.onerror = null;
-      audio.removeAttribute("src");
-      audio.load();
+      element.onloadedmetadata = null;
+      element.onerror = null;
+      element.removeAttribute("src");
+      element.load();
       resolve(ms);
     };
     const timer = window.setTimeout(() => finish(null), 8000);
-    audio.preload = "metadata";
-    audio.onloadedmetadata = () => {
-      const secs = audio.duration;
+    element.preload = "metadata";
+    element.onloadedmetadata = () => {
+      const secs = element.duration;
       finish(Number.isFinite(secs) && secs > 0 ? Math.round(secs * 1000) : null);
     };
-    audio.onerror = () => finish(null);
-    audio.src = url;
+    element.onerror = () => finish(null);
+    element.src = url;
   });
+}
+
+function probeAudioDurationMs(url: string): Promise<number | null> {
+  return probeMediaDurationMs(url, "audio");
+}
+
+function probeVideoDurationMs(url: string): Promise<number | null> {
+  return probeMediaDurationMs(url, "video");
 }
 
 function isSeedance2ValueModel(modelId: string | null | undefined): boolean {
@@ -362,8 +378,7 @@ function selectedVideoModelReferenceDisabledReason(
   counts: { images: number; videos: number; audios: number },
   mode: VideoGenMode,
 ): string | null {
-  const modelId = model?.apiModel ?? model?.id;
-  const capabilityReason = videoModelReferenceDisabledReason(modelId, counts);
+  const capabilityReason = videoModelReferenceDisabledReason(model, counts);
   if (capabilityReason) return capabilityReason;
   const caps = referenceCapsForMode(model, mode);
   if (!caps) return null;
@@ -383,6 +398,14 @@ function selectedVideoModelReferenceDisabledReason(
   return null;
 }
 
+// 首帧与单图图生视频的 1 张图是**结构性**的，不是模型容量。
+// 所以这条不接受媒体目录 referenceImageMax 的覆盖——那个字段表达的是「这个模型最多
+// 能吃几张参考图」，管的是参考类模式；让它盖住这里等于允许配置把首帧悄悄变成参考。
+const FIXED_IMAGE_CAP_BY_MODE: Partial<Record<VideoGenMode, number>> = {
+  firstFrame: 1,
+  imageToVideo: 1,
+};
+
 function referenceCapsForMode(
   model: ModelOption | null | undefined,
   mode: VideoGenMode,
@@ -390,7 +413,7 @@ function referenceCapsForMode(
   const defaults = REFERENCE_CAPS_BY_MODE[mode];
   if (!defaults) return null;
   return {
-    image: model?.referenceImageMax ?? defaults.image,
+    image: FIXED_IMAGE_CAP_BY_MODE[mode] ?? model?.referenceImageMax ?? defaults.image,
     video: model?.referenceVideoMax ?? defaults.video,
     audio: model?.referenceAudioMax ?? defaults.audio,
   };
@@ -539,6 +562,7 @@ export const VideoNode = memo(
     );
     const addNode = useCanvasStore((state) => state.addNode);
     const addEdge = useCanvasStore((state) => state.addEdge);
+    const addEdgeWithData = useCanvasStore((state) => state.addEdgeWithData);
     const setActiveOverlayNodeId = useCanvasStore(
       (state) => state.setActiveOverlayNodeId,
     );
@@ -588,6 +612,10 @@ export const VideoNode = memo(
 
     const prompt = typeof data.prompt === "string" ? data.prompt : "";
     const genMode: VideoGenMode = data.genMode ?? "textToVideo";
+    // Billing and submission must inspect the same one-hop inputs. Keeping the
+    // subscription here also lets the displayed quote react when a source
+    // video's browser-probed duration becomes available.
+    const upstreamNodes = useUpstreamNodes(id);
     const {
       models: availableVideoModels,
       isLoading: videoModelsLoading,
@@ -670,9 +698,43 @@ export const VideoNode = memo(
     // 选了 Seedance 2.0 也会被「全能参考仅支持 Seedance 2.0」挡下，视频/音频上游
     // 也不再自动切模式。CE 兜底列表恰好 id === apiModel，所以这个坑只在 EE 显形。
     const isSeedance20Model = isSeedance2VideoModel(selectedVideoModelId);
+    const supportsAllReference = isVideoModeSupportedByModel(
+      "allReference",
+      selectedVideoModel,
+    );
     const supportsHumanReview = selectedVideoModel?.humanReview === true;
     const humanReview = Boolean(data.humanReview);
     const count: VideoGenCount = (data.count ?? 1) as VideoGenCount;
+    const videoInputBilling = useMemo(() => {
+      if (genMode !== "allReference" && genMode !== "videoEdit") {
+        return { present: false, ready: true, durationSeconds: 0 };
+      }
+      const ordered = sortUpstreamByReferenceOrder(
+        upstreamNodes,
+        data.referenceOrder,
+      ).filter((node) => Boolean(referenceVideoUrl(node)));
+      const limit =
+        genMode === "videoEdit"
+          ? 1
+          : (selectedVideoModel?.referenceVideoMax ?? 3);
+      const videos = ordered.slice(0, Math.max(limit, 0));
+      if (videos.length === 0) {
+        return { present: false, ready: true, durationSeconds: 0 };
+      }
+      const durations = videos.map((node) =>
+        typeof node.data.durationMs === "number" && node.data.durationMs > 0
+          ? node.data.durationMs
+          : null,
+      );
+      const ready = durations.every((duration) => duration != null);
+      return {
+        present: true,
+        ready,
+        durationSeconds: ready
+          ? durations.reduce((sum, duration) => sum + (duration ?? 0), 0) / 1000
+          : 0,
+      };
+    }, [data.referenceOrder, genMode, selectedVideoModel, upstreamNodes]);
     useEffect(() => {
       const patch: Partial<VideoNodeData> = {};
       if (data.quality !== quality) {
@@ -763,7 +825,6 @@ export const VideoNode = memo(
     // referenceOrder taking precedence — see sortUpstreamByReferenceOrder.
     // Subscribe to ONLY this node's one-hop upstream (not the whole nodes array)
     // so dragging unrelated nodes doesn't re-render this node. See useUpstreamGraph.
-    const upstreamNodes = useUpstreamNodes(id);
     // 节点被连线（存在入边）后：隐藏「试试」CTA，只在节点中间显示一个图标（对齐 libtv）。
     const isConnected = useCanvasStore((state) =>
       state.edges.some((edge) => edge.target === id)
@@ -1173,6 +1234,7 @@ export const VideoNode = memo(
         mode:
           | "allReference"
           | "imageReference"
+          | "firstFrame"
           | "imageToVideo"
           | "firstLastFrame",
       ) => {
@@ -1188,6 +1250,7 @@ export const VideoNode = memo(
         const isSingleImage =
           mode === "allReference" ||
           mode === "imageReference" ||
+          mode === "firstFrame" ||
           mode === "imageToVideo";
         // 两种源节点的默认尺寸不同（图片节点 580×360 / 上传节点 320×350），
         // 左列的定位与避让都得按实际尺寸算，否则图片节点会压到视频节点身上。
@@ -1272,15 +1335,21 @@ export const VideoNode = memo(
             CANVAS_NODE_TYPES.imageGen,
             { x: baseX, y: baseY },
             {
-              displayName: mode === "imageToVideo" ? "首帧" : "参考图",
+              displayName: mode === "firstFrame" ? "首帧" : "参考图",
             },
           );
-          addEdge(newId, id);
+          if (mode === "firstFrame") {
+            addEdgeWithData(newId, id, { keyframeSlot: "first" });
+          } else {
+            addEdge(newId, id);
+          }
           const groupLabel =
             mode === "imageReference"
               ? "图片参考组"
-              : mode === "imageToVideo"
+              : mode === "firstFrame"
                 ? "首帧生成视频组"
+                : mode === "imageToVideo"
+                  ? "图生视频组"
                 : "全能参考组";
           state.autoGroupSpawn(id, [newId], { label: groupLabel });
           // 上游图片直接作为素材喂给对应端点；模式切到用户点的那一个，不预填提示词
@@ -1299,17 +1368,17 @@ export const VideoNode = memo(
           { x: baseX, y: firstY },
           { displayName: "首帧" },
         );
-        addEdge(firstId, id);
+        addEdgeWithData(firstId, id, { keyframeSlot: "first" });
         const lastId = addNode(
           CANVAS_NODE_TYPES.upload,
           { x: baseX, y: lastY },
           { displayName: "尾帧" },
         );
-        addEdge(lastId, id);
+        addEdgeWithData(lastId, id, { keyframeSlot: "last" });
         state.autoGroupSpawn(id, [firstId, lastId], { label: '首尾帧生成视频组' });
         updateNodeData(id, { genMode: "firstLastFrame" });
       },
-      [addEdge, addNode, id, updateNodeData],
+      [addEdge, addEdgeWithData, addNode, id, updateNodeData],
     );
 
     useEffect(() => {
@@ -1339,15 +1408,14 @@ export const VideoNode = memo(
       if (isHappyHorseModel) return;
       if (data.genMode != null) return;
       if (referenceImages.length === 0) return;
-      updateNodeData(id, {
-        genMode: videoUpstreamImageDefaultMode(selectedVideoModelId),
-      });
+      const defaultMode = videoUpstreamImageDefaultMode(selectedVideoModel);
+      if (defaultMode) updateNodeData(id, { genMode: defaultMode });
     }, [
       data.genMode,
       id,
       isHappyHorseModel,
       referenceImages.length,
-      selectedVideoModelId,
+      selectedVideoModel,
       updateNodeData,
     ]);
 
@@ -1355,8 +1423,8 @@ export const VideoNode = memo(
     // 一条统一状态机替代分散的兜底 effect，避免多个 effect 互相打架：
     //   - 上游有视频            → 视频编辑 (videoEdit / video_url)
     //   - 上游图片 >1 张        → 图片参考 (imageReference / reference_images 1-9)
-    //   - 上游图片 == 1 张      → 默认首帧 (imageToVideo / image_url)，但尊重用户
-    //                             主动切到的「图片参考」
+    //   - 上游图片 == 1 张      → 按目录能力选择单图默认入口，并尊重用户主动选择的
+    //                             首帧 / 图生视频 / 图片参考
     //   - 无上游                → 文生视频 (textToVideo)
     // 每次都纠正，确保 genMode 不会卡在与当前上游不匹配的模式（否则 submit 时会被
     // 静默截断 / 触发上游互斥报错）。
@@ -1369,7 +1437,15 @@ export const VideoNode = memo(
       } else if (images > 1) {
         target = "imageReference";
       } else if (images === 1) {
-        target = genMode === "imageReference" ? "imageReference" : "imageToVideo";
+        const currentImageMode = ["firstFrame", "imageToVideo", "imageReference"].includes(
+          genMode,
+        )
+          ? genMode
+          : null;
+        target =
+          currentImageMode && isVideoModeSupportedByModel(currentImageMode, selectedVideoModel)
+            ? currentImageMode
+            : (videoUpstreamImageDefaultMode(selectedVideoModel) ?? "textToVideo");
       } else {
         target = "textToVideo";
       }
@@ -1380,18 +1456,19 @@ export const VideoNode = memo(
       genMode,
       id,
       isHappyHorseModel,
+      selectedVideoModel,
       upstreamTypeCounts.images,
       upstreamTypeCounts.videos,
       updateNodeData,
     ]);
 
     // Audio refs only carry meaning under the omni-gen (allReference) path —
-    // textToVideo / firstLastFrame / imageToVideo discard them. So when an
+    // textToVideo / firstFrame / firstLastFrame / imageToVideo discard them. So when an
     // audio upstream first appears, force the mode to `allReference`. Tracked
     // through a ref so we only fire on the 0 → ≥1 transition; once the user
     // disconnects all audio and reconnects, it fires again.
-    // 仅 Seedance 2.0 能消费音频（omni）；非 2.0（Seedance 1.x）不支持音频素材，
-    // 由模型选择器拦截，这里不强推 allReference 以免顶进提交必 400 的模式。
+    // 是否可消费音频由媒体目录的 all_reference 能力决定；未声明该能力的模型由
+    // 模型选择器拦截，这里不强推 allReference 以免顶进提交必 400 的模式。
     const prevHasAudioRef = useRef(false);
     const hasAudioUpstream = useMemo(
       () => referenceMedia.some((item) => item.kind === "audio"),
@@ -1405,7 +1482,7 @@ export const VideoNode = memo(
         hasAudioUpstream &&
         data.genMode !== "allReference" &&
         !isHappyHorseModel &&
-        isSeedance20Model
+        supportsAllReference
       ) {
         updateNodeData(id, { genMode: "allReference" });
       }
@@ -1414,7 +1491,7 @@ export const VideoNode = memo(
       hasAudioUpstream,
       id,
       isHappyHorseModel,
-      isSeedance20Model,
+      supportsAllReference,
       updateNodeData,
     ]);
 
@@ -1465,12 +1542,12 @@ export const VideoNode = memo(
     // 首尾帧 / 图片参考）都会把视频丢弃。所以只要上游存在视频就强制切到
     // allReference 并锁死——下面的 tab 禁用规则会把其它 tab 一并禁用。
     // 与音频的「0→≥1 transition」不同，这里每次都纠正，确保视频在场期间无法切走。
-    // 仅 Seedance 2.0 能消费视频（omni）；1.x 已由上面那条 effect 换成 2.0，剩下
-    // 的非 2.0 情形（Grok 等显式渠道）不强推 allReference，以免顶进必 400 的模式。
+    // 是否可消费视频由媒体目录的 all_reference 能力决定；未声明该能力的模型不强推，
+    // 以免顶进提交必 400 的模式。
     useEffect(() => {
       if (upstreamCounts.videos === 0) return;
       if (isHappyHorseModel) return;
-      if (!isSeedance20Model) return;
+      if (!supportsAllReference) return;
       if (genMode === "allReference") return;
       updateNodeData(id, { genMode: "allReference" });
     }, [
@@ -1478,7 +1555,7 @@ export const VideoNode = memo(
       genMode,
       id,
       isHappyHorseModel,
-      isSeedance20Model,
+      supportsAllReference,
       updateNodeData,
     ]);
 
@@ -1492,17 +1569,16 @@ export const VideoNode = memo(
       if (genMode !== "textToVideo") return;
       if (upstreamCounts.images === 0 && upstreamCounts.audios === 0) return;
       if (upstreamCounts.images > 0) {
-        updateNodeData(id, {
-          genMode: videoUpstreamImageDefaultMode(selectedVideoModelId),
-        });
-      } else if (isSeedance20Model) {
+        const defaultMode = videoUpstreamImageDefaultMode(selectedVideoModel);
+        if (defaultMode) updateNodeData(id, { genMode: defaultMode });
+      } else if (supportsAllReference) {
         updateNodeData(id, { genMode: "allReference" });
       }
     }, [
       genMode,
       isHappyHorseModel,
-      isSeedance20Model,
-      selectedVideoModelId,
+      supportsAllReference,
+      selectedVideoModel,
       upstreamCounts.images,
       upstreamCounts.audios,
       id,
@@ -1517,8 +1593,39 @@ export const VideoNode = memo(
       if (isHappyHorseModel) return;
       if (genMode !== "firstLastFrame") return;
       if (upstreamCounts.images <= 2) return;
+      if (!supportsAllReference) return;
       updateNodeData(id, { genMode: "allReference" });
-    }, [genMode, isHappyHorseModel, upstreamCounts.images, id, updateNodeData]);
+    }, [
+      genMode,
+      isHappyHorseModel,
+      supportsAllReference,
+      upstreamCounts.images,
+      id,
+      updateNodeData,
+    ]);
+
+    // 「首帧生成视频」只承载一张图。i2v 端点按图片张数分流（1 张 = 图生视频，
+    // 2-9 张 = 图片参考），接上第二张后做的其实已经是图片参考了，模式却还停在
+    // 首帧上——所以直接把模式导到它真正在做的事情：全能参考 / 图片参考。
+    // 跟上面首尾帧 >2 图那条是同一类兜底，每次都纠正（不做一次性闩锁），
+    // 免得用户在多图状态下停在首帧、提交时被静默截断成一张。
+    // 该切到哪个、哪些情况不该动，全部收在 videoMultiImageAutoSwitchMode 里。
+    useEffect(() => {
+      const target = videoMultiImageAutoSwitchMode(
+        genMode,
+        selectedVideoModel ?? selectedVideoModelId,
+        upstreamCounts.images,
+      );
+      if (!target || target === genMode) return;
+      updateNodeData(id, { genMode: target });
+    }, [
+      genMode,
+      selectedVideoModel,
+      selectedVideoModelId,
+      upstreamCounts.images,
+      id,
+      updateNodeData,
+    ]);
 
     useEffect(
       () => () => {
@@ -1744,7 +1851,7 @@ export const VideoNode = memo(
 
     // 提交可用性按模式区分（对齐后端各端点校验）：
     // - 文生 / 全能参考：后端强校验 prompt，必须有提示词（自写或上游 text）；
-    // - 首帧(i2v) / 图片参考 / 首尾帧 / 视频编辑：后端不校验 prompt，允许空提示词，
+    // - 首帧 / 图生视频 / 图片参考 / 首尾帧 / 视频编辑：后端不校验 prompt，允许空提示词，
     //   只要素材齐备即可提交（图片类要 ≥1 张上游图；视频编辑要 ≥1 个上游视频）。
     //   这修掉「删掉默认提示词后传了首帧仍无法直接生成」的问题。
     const hasPromptText =
@@ -1752,12 +1859,14 @@ export const VideoNode = memo(
     const hasRequiredMediaForMode =
       genMode === "videoEdit"
         ? upstreamCounts.videos > 0
-        : upstreamCounts.images > 0;
+        : genMode === "allReference"
+          ? upstreamCounts.images + upstreamCounts.videos + upstreamCounts.audios > 0
+          : upstreamCounts.images > 0;
     // 提交前守卫：当前模型/模式无法消费已接入素材（视频/音频被静默丢、非 2.0 非
     // HappyHorse 多图会被后端 400）时给出理由并禁用提交，替代静默丢素材 / 提交 400。
     const mediaRejectionReason = videoSubmitMediaRejectionReason(
       genMode,
-      selectedVideoModelId,
+      selectedVideoModel,
       upstreamCounts,
     );
     const selectedModelReferenceError = selectedVideoModelReferenceDisabledReason(
@@ -1772,7 +1881,7 @@ export const VideoNode = memo(
     // 零估价开销；错误态与面板同时活跃时参数一致、查询同 key，由 react-query 去重。
     const retryBillingProbe = useGenerationCreditCost(
       "feature",
-      hasGenerationError && videoBackendForCost
+      hasGenerationError && videoBackendForCost && videoInputBilling.ready
         ? VIDEO_GENERATE_FEATURE_KEY
         : null,
       {
@@ -1786,6 +1895,8 @@ export const VideoNode = memo(
           pricing_quantity: Math.min(Math.max(count, 1), 4) * durationSec,
           operation: genMode,
           generate_audio: generateAudio,
+          video_input_present: videoInputBilling.present,
+          input_video_duration_seconds: videoInputBilling.durationSeconds,
         },
         quantity: Math.min(Math.max(count, 1), 4),
       },
@@ -1858,6 +1969,31 @@ export const VideoNode = memo(
           }
           return urls;
         };
+        const collectUpstreamKeyframeUrls = (): {
+          firstFrameUrl: string | null;
+          lastFrameUrl: string | null;
+        } => {
+          const state = useCanvasStore.getState();
+          const candidates: Array<{
+            url: string;
+            slot?: "first" | "last";
+            legacyDisplayName?: string | null;
+          }> = [];
+          for (const node of collectUpstream()) {
+            const url = submittableImageUrl(node);
+            if (!url) continue;
+            const edge = state.edges.find(
+              (candidate) => candidate.source === node.id && candidate.target === id,
+            );
+            candidates.push({
+              url,
+              slot: edge?.data?.keyframeSlot,
+              legacyDisplayName:
+                typeof node.data.displayName === "string" ? node.data.displayName : null,
+            });
+          }
+          return resolveVideoKeyframeUrls(candidates);
+        };
 
         const durationClamped = clampVideoDuration(durationSec, durationBounds);
         const cameraTemplateId = cameraMovementId;
@@ -1868,13 +2004,10 @@ export const VideoNode = memo(
         // 后端不再支持一次出多条，改为按「生成数量」并发调用 N 次接口。先按
         // genMode 组装出一个「调一次接口」的闭包 doSubmit，校验失败则置空提前返回。
         let doSubmit: ((targetId: string) => Promise<FreezoneJobRef>) | null = null;
-        if (genMode === "firstLastFrame") {
-          const imageUrls = collectUpstreamImageUrls().slice(
-            0,
-            referenceCaps?.image ?? 2,
-          );
-          const firstFrameUrl = imageUrls[0] ?? null;
-          const lastFrameUrl = imageUrls[1] ?? null;
+        if (genMode === "firstFrame" || genMode === "firstLastFrame") {
+          const keyframes = collectUpstreamKeyframeUrls();
+          const firstFrameUrl = keyframes.firstFrameUrl;
+          const lastFrameUrl = genMode === "firstLastFrame" ? keyframes.lastFrameUrl : null;
           if (!firstFrameUrl && !lastFrameUrl) {
             console.warn(
               "[video-node] firstLastFrame submit without any frame",
@@ -1889,6 +2022,7 @@ export const VideoNode = memo(
             submitFreezoneVideoKeyframes(projectId, {
               firstFrameUrl,
               lastFrameUrl,
+              genMode,
               prompt: composedPrompt,
               cameraTemplateId,
               aspectRatio: submitAspectRatio,
@@ -1896,7 +2030,6 @@ export const VideoNode = memo(
               durationSeconds: durationClamped,
               generateAudio,
               model: selectedVideoModel?.catalogId ?? modelId,
-              genMode,
               modelParams: data.modelParams,
               humanReview: supportsHumanReview && humanReview,
               sceneOptimize: sceneOptimize ?? null,
@@ -1975,14 +2108,13 @@ export const VideoNode = memo(
               nodeId: targetId,
             });
         } else if (genMode === "allReference") {
-          // 全能参考(omni)仅 Seedance 2.0 后端支持：HappyHorse / Seedance 1.x 打
-          // omni 端点必被后端 400。这里前置守卫给出可读提示，防止残留模式（如从
-          // 2.0 切到 1.x 后未重置）在提交时打到不支持的端点。
-          if (!isSeedance20Model) {
+          // 全能参考是否可用以媒体目录的 supportedModes 为准。这里前置守卫给出
+          // 可读提示，防止切换模型后残留模式打到不支持的端点。
+          if (!supportsAllReference) {
             void showErrorDialog(
               isHappyHorseModel
                 ? "HappyHorse 不支持全能参考模式，请切换为文生视频或图生视频。"
-                : "全能参考仅支持 Seedance 2.0 模型，请切换到 Seedance 2.0，或改用「首帧生成视频」。",
+                : "当前模型不支持全能参考，请切换模型或改用其它生成模式。",
               t("common.error"),
             );
             updateNodeData(id, {
@@ -2004,6 +2136,11 @@ export const VideoNode = memo(
             label: string;
             durationMs: number | null;
           }[] = [];
+          const videoRefs: {
+            url: string;
+            label: string;
+            durationMs: number | null;
+          }[] = [];
           let imageCount = 0;
           let videoCount = 0;
           let audioCount = 0;
@@ -2014,6 +2151,16 @@ export const VideoNode = memo(
               // 视频节点或携带 videoUrl 的 upload 节点（资产库视频）统一收集。
               if (videoCount < caps.video) {
                 references.push({ type: "video", url: videoRefUrl });
+                videoRefs.push({
+                  url: videoRefUrl,
+                  label: t("node.videoNode.referenceDuration.videoFallbackLabel", {
+                    index: videoCount + 1,
+                  }),
+                  durationMs:
+                    typeof node.data.durationMs === "number"
+                      ? node.data.durationMs
+                      : null,
+                });
                 videoCount += 1;
               }
             } else if (isAudioNode(node)) {
@@ -2071,47 +2218,99 @@ export const VideoNode = memo(
             });
             return;
           }
-          // Seedance 2.0 厂商对**每条**音频都要求 1.8s ≤ 时长 ≤ 15.2s（见
-          // audioReferenceDurationRejection），越界会以 InvalidParameter 400 回来。
-          // 提交前先本地校验：durationMs 缺失时用 <audio> 探测兜底，越界就弹窗拦下，
-          // 避免白跑一趟后端。仅对 seedance2 生效（其它模型边界未知）。
-          if (isSeedance20Model && audioRefs.length > 0) {
+          const validateReferenceDurations = async (
+            media: "audio" | "video",
+            refs: typeof audioRefs,
+          ): Promise<boolean> => {
+            const configured = referenceDurationLimitsMs(selectedVideoModel, media);
+            const limits = {
+              minMs:
+                configured.minMs ??
+                (media === "audio" && isSeedance20Model
+                  ? MIN_AUDIO_REFERENCE_DURATION_MS
+                  : undefined),
+              maxMs:
+                configured.maxMs ??
+                (media === "audio" && isSeedance20Model
+                  ? MAX_AUDIO_REFERENCE_DURATION_MS
+                  : undefined),
+              totalMinMs: configured.totalMinMs,
+              totalMaxMs:
+                configured.totalMaxMs ??
+                (media === "audio" && isSeedance20Model
+                  ? MAX_AUDIO_REFERENCE_TOTAL_DURATION_MS
+                  : undefined),
+            };
+            if (refs.length === 0 || Object.values(limits).every((value) => value == null)) {
+              return true;
+            }
             const resolvedDurations = await Promise.all(
-              audioRefs.map((ref) =>
+              refs.map((ref) =>
                 typeof ref.durationMs === "number" && ref.durationMs > 0
                   ? Promise.resolve(ref.durationMs)
-                  : probeAudioDurationMs(ref.url),
+                  : media === "audio"
+                    ? probeAudioDurationMs(ref.url)
+                    : probeVideoDurationMs(ref.url),
               ),
             );
             const rejection = audioReferenceDurationRejection(
-              audioRefs.map((ref, index) => ({
+              refs.map((ref, index) => ({
                 label: ref.label,
                 durationMs: resolvedDurations[index] ?? null,
               })),
+              {
+                minMs: limits.minMs ?? null,
+                maxMs: limits.maxMs ?? null,
+                totalMinMs: limits.totalMinMs,
+                totalLimitMs: limits.totalMaxMs ?? null,
+                perClipLimits: limits.minMs != null || limits.maxMs != null,
+              },
             );
             if (rejection) {
               const clips = formatAudioDurationClips(rejection.clips, (key, vars) =>
                 t(key, vars),
               );
-              void showErrorDialog(
+              const prefix =
+                media === "audio" ? "node.videoNode.audio" : "node.videoNode.referenceDuration";
+              const message =
                 rejection.kind === "tooShort"
-                  ? t("node.videoNode.audio.durationTooShort", {
-                      min: MIN_AUDIO_REFERENCE_DURATION_MS / 1000,
+                  ? t(`${prefix}.${media === "audio" ? "durationTooShort" : "videoTooShort"}`, {
+                      min: formatAudioDurationSeconds(limits.minMs ?? 0),
                       clips,
                     })
-                  : t("node.videoNode.audio.durationTooLong", {
-                      max: MAX_AUDIO_REFERENCE_DURATION_MS / 1000,
-                      clips,
-                    }),
-                t("common.error"),
-              );
+                  : rejection.kind === "tooLong"
+                    ? t(`${prefix}.${media === "audio" ? "durationTooLong" : "videoTooLong"}`, {
+                        max: formatAudioDurationSeconds(limits.maxMs ?? 0),
+                        clips,
+                      })
+                    : rejection.kind === "totalTooShort"
+                      ? t(
+                          `${prefix}.${media === "audio" ? "durationTotalTooShort" : "videoTotalTooShort"}`,
+                          {
+                            min: formatAudioDurationSeconds(rejection.limitMs),
+                            total: formatAudioDurationSeconds(rejection.totalMs),
+                            clips,
+                          },
+                        )
+                      : t(
+                          `${prefix}.${media === "audio" ? "durationTotalTooLong" : "videoTotalTooLong"}`,
+                          {
+                            max: formatAudioDurationSeconds(rejection.limitMs),
+                            total: formatAudioDurationSeconds(rejection.totalMs),
+                            clips,
+                          },
+                        );
+              toast.error(message, { duration: 5_000 });
               updateNodeData(id, {
                 isGenerating: false,
                 generationStartedAt: null,
               });
-              return;
+              return false;
             }
-          }
+            return true;
+          };
+          if (!(await validateReferenceDurations("audio", audioRefs))) return;
+          if (!(await validateReferenceDurations("video", videoRefs))) return;
           doSubmit = (targetId) =>
             submitFreezoneVideoOmniGen(projectId, {
               prompt: composedPrompt,
@@ -2339,6 +2538,7 @@ export const VideoNode = memo(
       humanReview,
       id,
       isSeedance20Model,
+      supportsAllReference,
       supportsHumanReview,
       modelId,
       prompt,
@@ -2749,15 +2949,12 @@ export const VideoNode = memo(
             </div>
           ) : (
             <div className="flex h-full w-full items-center px-8">
-              {/* 空态（无入边）才走到这里，一定没有上游视频。CTA 展示哪几个模式
-                  完全按当前模型的能力口径决定（videoEmptyStateCtaModes）：HappyHorse
-                  给「首帧 / 图片参考」；Seedance 2.0 给「全能参考 / 图片参考 / 首尾帧」；
-                  Seedance 1.x 等非 2.0 只给「首帧」——全能参考会 400、首尾帧尾帧被
-                  静默丢弃、多图参考不支持，不给入口免得点了被静默改写或提交必失败。 */}
+              {/* 空态（无入边）才走到这里。CTA 完全按媒体模型目录的 supportedModes
+                  决定；目录尚未加载时才使用模型族兜底，避免展示后端会拒绝的入口。 */}
               <div className="flex min-h-0 flex-col justify-center gap-2 py-4">
                 <div className="text-xs text-[var(--canvas-node-input-helper)]">试试：</div>
                 <div className="flex flex-col gap-0.5">
-                  {videoEmptyStateCtaModes(selectedVideoModelId).map((mode) => {
+                  {videoEmptyStateCtaModes(selectedVideoModel).map((mode) => {
                     const { Icon, label } = VIDEO_EMPTY_STATE_CTA_META[mode];
                     return (
                       <button
@@ -3018,6 +3215,9 @@ export const VideoNode = memo(
             prompt={prompt}
             isGenerating={isGenerating}
             videoBackendForCost={videoBackendForCost}
+            videoInputPresent={videoInputBilling.present}
+            videoInputBillingReady={videoInputBilling.ready}
+            inputVideoDurationSeconds={videoInputBilling.durationSeconds}
             submitDisabled={submitDisabled}
             selectedModelReferenceError={selectedModelReferenceError}
             mediaRejectionReason={mediaRejectionReason}

@@ -35,8 +35,18 @@ def test_freezone_catalog_exposes_real_minimax_h3_capabilities():
         "max_duration": 15,
         "ratioOptions": ["9:16", "16:9", "1:1"],
         "ratio_options": ["9:16", "16:9", "1:1"],
-        "supportedModes": ["first_frame", "first_last_frame", "image_reference"],
-        "supported_modes": ["first_frame", "first_last_frame", "image_reference"],
+        "supportedModes": [
+            "first_frame",
+            "image_to_video",
+            "first_last_frame",
+            "image_reference",
+        ],
+        "supported_modes": [
+            "first_frame",
+            "image_to_video",
+            "first_last_frame",
+            "image_reference",
+        ],
         "referenceImageMax": 9,
         "reference_image_max": 9,
         "referenceVideoMax": 0,
@@ -116,6 +126,7 @@ async def test_ce_h3_model_params_accept_quality_and_fixed_seed(monkeypatch):
     assert values == {"h3_preset": "TURBO", "seed": 88}
     assert capabilities["supportedModes"] == [
         "first_frame",
+        "image_to_video",
         "first_last_frame",
         "image_reference",
     ]
