@@ -97,3 +97,37 @@ def test_baseline_workflow_keeps_easycache_and_production_sampler():
     assert workflow["105:150"]["inputs"]["reuse_threshold"] == 0.28
     assert workflow["105:17"]["inputs"]["sampler_name"] == "res_multistep"
     assert workflow["105:9"]["inputs"]["steps"] == 12
+
+
+def test_run_benchmark_uses_configured_seed_per_trial(tmp_path, monkeypatch):
+    benchmark = _load_module()
+    config = {
+        "server_url": "http://127.0.0.1:18190",
+        "workflow_path": str(
+            ROOT / "src/novelvideo/generators/h3_workflows/minimax_h3_fl2va_api.json"
+        ),
+        "image_name": "canary_first.jpg",
+        "prompt": "fixed",
+        "lora_name": "turbo.safetensors",
+        "seed": 1,
+        "seeds": [101, 102],
+        "width": 864,
+        "height": 480,
+        "frames": 124,
+        "steps": [8, 8],
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(config))
+    seen = []
+
+    def fake_execute(**kwargs):
+        seen.append(kwargs["workflow"]["105:15"]["inputs"]["noise_seed"])
+        return {"prompt_id": str(len(seen)), "wall_seconds": 1.0, "output_path": "x.mp4"}
+
+    monkeypatch.setattr(benchmark, "execute_prompt", fake_execute)
+    monkeypatch.setattr(benchmark, "read_peak_vram_mb", lambda: 1)
+
+    report = benchmark.run_benchmark(config_path, tmp_path / "out")
+
+    assert seen == [101, 102]
+    assert [item["seed"] for item in report["runs"]] == [101, 102]

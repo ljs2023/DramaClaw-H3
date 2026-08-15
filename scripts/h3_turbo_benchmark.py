@@ -175,13 +175,16 @@ def run_benchmark(config_path: Path, output_dir: Path) -> dict[str, Any]:
     base = json.loads(workflow_path.read_text(encoding="utf-8"))
     output_dir.mkdir(parents=True, exist_ok=True)
     runs = []
-    for steps in config["steps"]:
+    seeds = config.get("seeds") or [config["seed"]] * len(config["steps"])
+    if len(seeds) != len(config["steps"]):
+        raise ValueError("seeds and steps must contain the same number of trials")
+    for steps, seed in zip(config["steps"], seeds, strict=True):
         workflow = build_workflow(
             base,
             image_name=config["image_name"],
             prompt=config["prompt"],
             lora_name=config["lora_name"],
-            seed=config["seed"],
+            seed=seed,
             width=config["width"],
             height=config["height"],
             frames=config["frames"],
@@ -189,7 +192,7 @@ def run_benchmark(config_path: Path, output_dir: Path) -> dict[str, Any]:
         )
         core = {
             "steps": int(steps),
-            "seed": int(config["seed"]),
+            "seed": int(seed),
             "width": int(config["width"]),
             "height": int(config["height"]),
             "frames": int(config["frames"]),
