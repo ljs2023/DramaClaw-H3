@@ -55,7 +55,7 @@ RTX 4070 SUPER + 当前量化底模上没有达到接入门槛，因此暂不进
 
 ### 3. 自动测试
 
-- Python 完整测试：`2266 passed, 16 skipped, 2 deselected`
+- Python 完整测试：`2271 passed, 16 skipped, 2 deselected`
 - 前端完整测试：324 个测试文件，`2178 passed`
 - H3 Turbo 基准工具测试：`5 passed`
 - Ruff：通过
