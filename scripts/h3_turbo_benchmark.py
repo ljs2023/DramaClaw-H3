@@ -54,7 +54,6 @@ def build_workflow(
             "ResolutionSelector",
             "ComfyMathExpression",
             "PrimitiveFloat",
-            "EasyCache",
         }:
             workflow.pop(node_id)
 
@@ -64,25 +63,35 @@ def build_workflow(
     _, sampler = _node(workflow, "KSamplerSelect")
     _, noise = _node(workflow, "RandomNoise")
     _, save = _node(workflow, "SaveVideo")
-    workflow["benchmark_lora"] = {
-        "class_type": "LoraLoaderModelOnly",
-        "inputs": {"model": [unet_id, 0], "lora_name": lora_name, "strength_model": 1.0},
-        "_meta": {"title": "H3 benchmark Turbo LoRA"},
-    }
-    workflow["benchmark_shift"] = {
-        "class_type": "MiniMaxH3SigmaShift",
-        "inputs": {
-            "model": ["benchmark_lora", 0],
-            "shift_video": 12.0,
-            "shift_audio": 3.0,
-        },
-        "_meta": {"title": "H3 benchmark sigma shift"},
-    }
+    if lora_name:
+        for node_id in list(workflow):
+            if workflow[node_id].get("class_type") == "EasyCache":
+                workflow.pop(node_id)
+        workflow["benchmark_lora"] = {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {"model": [unet_id, 0], "lora_name": lora_name, "strength_model": 1.0},
+            "_meta": {"title": "H3 benchmark Turbo LoRA"},
+        }
+        workflow["benchmark_shift"] = {
+            "class_type": "MiniMaxH3SigmaShift",
+            "inputs": {
+                "model": ["benchmark_lora", 0],
+                "shift_video": 12.0,
+                "shift_audio": 3.0,
+            },
+            "_meta": {"title": "H3 benchmark sigma shift"},
+        }
+        model_link = ["benchmark_shift", 0]
+        sampler["inputs"]["sampler_name"] = "euler"
+    else:
+        cache_id, cache = _node(workflow, "EasyCache")
+        cache["inputs"].update({"model": [unet_id, 0], "reuse_threshold": 0.28})
+        model_link = [cache_id, 0]
+        sampler["inputs"]["sampler_name"] = "res_multistep"
     scheduler["inputs"].update(
-        {"model": ["benchmark_shift", 0], "scheduler": "simple", "steps": int(steps)}
+        {"model": model_link, "scheduler": "simple", "steps": int(steps)}
     )
-    guider["inputs"]["model"] = ["benchmark_shift", 0]
-    sampler["inputs"]["sampler_name"] = "euler"
+    guider["inputs"]["model"] = model_link
     noise["inputs"]["noise_seed"] = int(seed)
     save["inputs"]["filename_prefix"] = f"h3_turbo_benchmark/{steps}step"
     return workflow

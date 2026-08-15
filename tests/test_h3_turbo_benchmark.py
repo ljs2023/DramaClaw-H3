@@ -73,3 +73,27 @@ def test_turbo_workflow_uses_lora_shift_and_euler():
     assert workflow["105:17"]["inputs"]["sampler_name"] == "euler"
     assert workflow["105:9"]["inputs"]["steps"] == 8
     assert "105:150" not in workflow
+
+
+def test_baseline_workflow_keeps_easycache_and_production_sampler():
+    benchmark = _load_module()
+    base = json.loads(
+        (ROOT / "src/novelvideo/generators/h3_workflows/minimax_h3_fl2va_api.json").read_text()
+    )
+
+    workflow = benchmark.build_workflow(
+        base,
+        image_name="canary_first.jpg",
+        prompt="fixed prompt",
+        lora_name="",
+        seed=42,
+        width=864,
+        height=480,
+        frames=124,
+        steps=12,
+    )
+
+    assert "benchmark_lora" not in workflow
+    assert workflow["105:150"]["inputs"]["reuse_threshold"] == 0.28
+    assert workflow["105:17"]["inputs"]["sampler_name"] == "res_multistep"
+    assert workflow["105:9"]["inputs"]["steps"] == 12
