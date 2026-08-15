@@ -131,3 +131,30 @@ def test_run_benchmark_uses_configured_seed_per_trial(tmp_path, monkeypatch):
 
     assert seen == [101, 102]
     assert [item["seed"] for item in report["runs"]] == [101, 102]
+
+
+def test_larry_workflow_uses_quantized_base_aware_nodes():
+    benchmark = _load_module()
+    base = json.loads(
+        (ROOT / "src/novelvideo/generators/h3_workflows/minimax_h3_fl2va_api.json").read_text()
+    )
+
+    workflow = benchmark.build_workflow(
+        base,
+        image_name="canary_first.jpg",
+        prompt="fixed prompt",
+        lora_name="larry-v4.safetensors",
+        seed=42,
+        width=864,
+        height=480,
+        frames=124,
+        steps=6,
+        implementation="larry",
+        low_vram=False,
+    )
+
+    assert workflow["benchmark_lora"]["class_type"] == "MiniMaxH3TurboLoRA"
+    assert workflow["benchmark_lora"]["inputs"]["low_vram"] is False
+    assert workflow["benchmark_sampler"]["class_type"] == "MiniMaxH3TurboSampler"
+    assert workflow["105:14"]["inputs"]["sampler"] == ["benchmark_sampler", 0]
+    assert "benchmark_shift" not in workflow

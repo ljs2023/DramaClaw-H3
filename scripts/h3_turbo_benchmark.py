@@ -33,6 +33,8 @@ def build_workflow(
     height: int,
     frames: int,
     steps: int,
+    implementation: str = "modeltc",
+    low_vram: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Convert the verified DramaClaw FL2VA prompt into a core-node Turbo prompt."""
     workflow = copy.deepcopy(base)
@@ -61,28 +63,52 @@ def build_workflow(
     _, scheduler = _node(workflow, "BasicScheduler")
     _, guider = _node(workflow, "BasicGuider")
     _, sampler = _node(workflow, "KSamplerSelect")
+    _, advanced_sampler = _node(workflow, "SamplerCustomAdvanced")
     _, noise = _node(workflow, "RandomNoise")
     _, save = _node(workflow, "SaveVideo")
     if lora_name:
         for node_id in list(workflow):
             if workflow[node_id].get("class_type") == "EasyCache":
                 workflow.pop(node_id)
-        workflow["benchmark_lora"] = {
-            "class_type": "LoraLoaderModelOnly",
-            "inputs": {"model": [unet_id, 0], "lora_name": lora_name, "strength_model": 1.0},
-            "_meta": {"title": "H3 benchmark Turbo LoRA"},
-        }
-        workflow["benchmark_shift"] = {
-            "class_type": "MiniMaxH3SigmaShift",
-            "inputs": {
-                "model": ["benchmark_lora", 0],
-                "shift_video": 12.0,
-                "shift_audio": 3.0,
-            },
-            "_meta": {"title": "H3 benchmark sigma shift"},
-        }
-        model_link = ["benchmark_shift", 0]
-        sampler["inputs"]["sampler_name"] = "euler"
+        if implementation == "larry":
+            workflow["benchmark_lora"] = {
+                "class_type": "MiniMaxH3TurboLoRA",
+                "inputs": {
+                    "model": [unet_id, 0],
+                    "lora_name": lora_name,
+                    "strength": 1.0,
+                    "low_vram": bool(low_vram),
+                },
+                "_meta": {"title": "Larry H3 Turbo LoRA"},
+            }
+            workflow["benchmark_sampler"] = {
+                "class_type": "MiniMaxH3TurboSampler",
+                "inputs": {},
+                "_meta": {"title": "Larry H3 Turbo sampler"},
+            }
+            model_link = ["benchmark_lora", 0]
+            advanced_sampler["inputs"]["sampler"] = ["benchmark_sampler", 0]
+        else:
+            workflow["benchmark_lora"] = {
+                "class_type": "LoraLoaderModelOnly",
+                "inputs": {
+                    "model": [unet_id, 0],
+                    "lora_name": lora_name,
+                    "strength_model": 1.0,
+                },
+                "_meta": {"title": "H3 benchmark Turbo LoRA"},
+            }
+            workflow["benchmark_shift"] = {
+                "class_type": "MiniMaxH3SigmaShift",
+                "inputs": {
+                    "model": ["benchmark_lora", 0],
+                    "shift_video": 12.0,
+                    "shift_audio": 3.0,
+                },
+                "_meta": {"title": "H3 benchmark sigma shift"},
+            }
+            model_link = ["benchmark_shift", 0]
+            sampler["inputs"]["sampler_name"] = "euler"
     else:
         cache_id, cache = _node(workflow, "EasyCache")
         cache["inputs"].update({"model": [unet_id, 0], "reuse_threshold": 0.28})
@@ -189,6 +215,8 @@ def run_benchmark(config_path: Path, output_dir: Path) -> dict[str, Any]:
             height=config["height"],
             frames=config["frames"],
             steps=steps,
+            implementation=config.get("implementation", "modeltc"),
+            low_vram=bool(config.get("low_vram", False)),
         )
         core = {
             "steps": int(steps),
