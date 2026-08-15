@@ -149,6 +149,7 @@ async def test_freezone_h3_first_last_uses_fl2va_inputs_not_reference_mode(monke
     assert captured["references"] == []
     assert captured["h3_preset"] == "TURBO"
     assert captured["seed"] == 88
+    assert captured["audio_setting"] == "mute"
 
 
 @pytest.mark.asyncio

@@ -1244,8 +1244,11 @@ async def run_freezone_video_gen(
         ):
             raise RuntimeError(f"backend {backend} requires a first-frame image reference")
         extra_kwargs: dict[str, object] = {}
-        if audio_setting:
-            extra_kwargs["audio_setting"] = audio_setting
+        effective_audio_setting = audio_setting
+        if is_freezone_h3_backend(backend) and not generate_audio:
+            effective_audio_setting = "mute"
+        if effective_audio_setting:
+            extra_kwargs["audio_setting"] = effective_audio_setting
         result = await video_gen.generate(
             image_path=first_image_ref.path if first_image_ref and first_image_ref.path else None,
             prompt=prompt,
