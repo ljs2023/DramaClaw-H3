@@ -332,20 +332,6 @@ The people building DramaClaw — thank you. 💜
 </table>
 
 <br/>
-
-## Produced By
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./assets/partners/neoflying-lab-dark.png">
-    <img src="./assets/partners/neoflying-lab.png" alt="Neo Flying AI Laboratory" height="48">
-  </picture>
-</p>
-
-<p align="center"><sub>Logo is a trademark of its respective owner, shown with permission.</sub></p>
-
-<br/>
-
 ## License
 
 [Elastic License 2.0](./LICENSES/Elastic-2.0.txt). Free to use, modify, and redistribute — the only restriction is that you may not resell the software as a hosted service. See the [license explainer](./docs/en/license.md).
