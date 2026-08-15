@@ -7061,6 +7061,19 @@ def _catalog_entry_id(entry: dict[str, Any] | None) -> str:
     return str(entry.get("catalogId") or entry.get("catalog_id") or "").strip()
 
 
+def _video_catalog_with_local_h3(
+    catalog: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Keep the in-process H3 backend visible beside configured cloud models."""
+    defaults = get_freezone_video_model_options()
+    if catalog is None:
+        return defaults
+    if any("comfyui_h3" in _catalog_entry_identifiers(item) for item in catalog):
+        return catalog
+    local_h3 = next(item for item in defaults if item["id"] == "comfyui_h3")
+    return [*catalog, local_h3]
+
+
 def _catalog_image_execution_selection(
     entry: dict[str, Any] | None,
     *,
@@ -7111,7 +7124,6 @@ async def _resolve_catalog_request(
     )
     if (
         entry is None
-        and catalog is None
         and media_type == "video"
         and requested == "comfyui_h3"
     ):
@@ -7316,7 +7328,7 @@ async def freezone_video_models(
     catalog = await _ee_media_model_catalog("video")
     return {
         "ok": True,
-        "data": get_freezone_video_model_options() if catalog is None else catalog,
+        "data": _video_catalog_with_local_h3(catalog),
     }
 
 

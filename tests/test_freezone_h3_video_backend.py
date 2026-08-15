@@ -5,6 +5,7 @@ import pytest
 
 from novelvideo.freezone.jobs import run_freezone_video_gen
 from novelvideo.api.routes.freezone import _resolve_catalog_request
+from novelvideo.api.routes import freezone as freezone_routes
 from novelvideo.freezone.video_node import (
     get_freezone_video_model_options,
     normalize_video_resolution_for_backend,
@@ -65,6 +66,49 @@ def test_freezone_resolves_h3_without_seedance_alias_and_locks_480p():
     assert resolve_freezone_video_backend("comfyui_h3") == "comfyui_h3"
     assert resolve_freezone_video_backend("MiniMax H3 Local") == "comfyui_h3"
     assert normalize_video_resolution_for_backend("comfyui_h3", "1080p") == "480p"
+
+
+@pytest.mark.asyncio
+async def test_freezone_video_models_keeps_local_h3_with_service_catalog(monkeypatch):
+    async def resolve_project(*_args, **_kwargs):
+        return SimpleNamespace()
+
+    async def service_catalog(media_type):
+        assert media_type == "video"
+        return [{"id": "cloud-video", "apiModel": "cloud-video"}]
+
+    monkeypatch.setattr(freezone_routes, "_resolve_freezone_project", resolve_project)
+    monkeypatch.setattr(freezone_routes, "_ee_media_model_catalog", service_catalog)
+
+    result = await freezone_routes.freezone_video_models(
+        project="project-h3-local",
+        user={"username": "local"},
+    )
+
+    assert [item["id"] for item in result["data"]] == [
+        "cloud-video",
+        "comfyui_h3",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_h3_request_resolves_with_service_catalog_present(monkeypatch):
+    async def service_catalog(media_type):
+        assert media_type == "video"
+        return [{"id": "cloud-video", "apiModel": "cloud-video"}]
+
+    monkeypatch.setattr(freezone_routes, "_ee_media_model_catalog", service_catalog)
+
+    schema, values, capabilities = await _resolve_catalog_request(
+        "video",
+        "comfyui_h3",
+        {"h3_preset": "TURBO", "seed": 88},
+        mode="first_frame",
+    )
+
+    assert schema["endpoint"] == "video/generations"
+    assert values == {"h3_preset": "TURBO", "seed": 88}
+    assert capabilities["id"] == "comfyui_h3"
 
 
 @pytest.mark.asyncio
