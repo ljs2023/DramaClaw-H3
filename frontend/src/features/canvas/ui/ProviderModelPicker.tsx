@@ -30,6 +30,7 @@ const MODEL_PICKER_OPTION_BASE_CLASS =
 
 export type ProviderId =
   | 'newapi'
+  | 'local'
   | 'huimeng'
   | 'openrouter'
   | 'openai'
