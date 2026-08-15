@@ -1,0 +1,12 @@
+{
+  "server_url": "http://127.0.0.1:18190",
+  "workflow_path": "src/novelvideo/generators/h3_workflows/minimax_h3_fl2va_api.json",
+  "image_name": "canary_first.jpg",
+  "prompt": "A fixed reproducible MiniMax H3 benchmark shot.",
+  "lora_name": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+  "seed": 20260815,
+  "width": 864,
+  "height": 480,
+  "frames": 124,
+  "steps": [8]
+}
