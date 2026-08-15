@@ -2,7 +2,7 @@
 
 首次部署：2026-08-05
 本次复核与升级：2026-08-15
-目标服务器：`192.168.3.9`
+目标服务器：`<服务器IP>`
 
 ## 一、结论
 
@@ -19,9 +19,9 @@ RTX 4070 SUPER + 当前量化底模上没有达到接入门槛，因此暂不进
 
 ## 二、当前生产状态
 
-- DramaClaw Web：`http://192.168.3.9:8080`
-- DramaClaw API：`http://192.168.3.9:8780`
-- MiniMax H3/ComfyUI：`http://192.168.3.9:18189`
+- DramaClaw Web：`http://<服务器IP>:8080`
+- DramaClaw API：`http://<服务器IP>:8780`
+- MiniMax H3/ComfyUI：`http://<服务器IP>:18189`
 - DramaClaw 目录：`/data/DramaClaw`
 - H3 目录：`/data/MiniMax-H3-ComfyUI`
 - H3 Backend ID：`comfyui_h3`
